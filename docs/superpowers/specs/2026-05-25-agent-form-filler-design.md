@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-A macOS desktop application that accepts any uploaded PDF, Word, Excel, or HTML form, produces a pixel-perfect (95–99% fidelity) empty replica, semantically understands each field (type, label, instructions, check style) via a hybrid native-metadata + LLM Vision extractor, then fills it with content sourced from manual input, LLM prompts, RAG queries, iMessage, CSV, or any configured external source. An AI-powered visual validation loop identifies rendering defects and generates fix prompts for user-approved iterative refinement. All LLM, RAG, and source integrations are fully configurable — nothing is hardcoded.
+A macOS desktop application that accepts any uploaded PDF, Word, Excel, or HTML form and fills it from any configured source (RAG, iMessage, CSV, folder, manual, LLM prompt). The app uses a **dual-path fill strategy**: if the uploaded form is fillable (editable widgets, no lock), content is written directly into the original. If the form is locked, flattened, or scanned, the app first produces a pixel-perfect (95–99% fidelity) replica via PyMuPDF→ReportLab and fills the replica instead — bypassing the lock entirely. Field semantics (type, label, instructions, check style, ambiguity) are recovered via a hybrid native-metadata + Claude Vision extractor. An AI visual-validation loop catches rendering defects with user-approved fix iterations. All LLM, RAG, and source integrations are fully configurable — nothing is hardcoded.
 
 ---
 
@@ -16,15 +16,18 @@ A macOS desktop application that accepts any uploaded PDF, Word, Excel, or HTML 
 | Constraint | Decision |
 |------------|----------|
 | Platform | macOS only (Apple Silicon M4) |
-| Document input | User always uploads a clean empty source form — no scraping, no generation from scratch |
-| Fidelity target | Pixel-perfect: visually identical when printed side-by-side |
+| Document input | User always uploads an empty source form — no scraping, no generation from scratch |
+| Fill strategy | Auto-detected: `direct` (fillable forms) or `replicate` (locked / flattened / scanned). User can override per-document. |
+| Fidelity target | 95–99% — the *filled output* visually matches the uploaded original (only the inserted content differs) |
 | Document types | PDF, DOCX, XLSX, HTML (equal priority) |
 | Content sources | Manual, LLM prompt, RAG, iMessage, CSV/JSON, folder watch |
+| Ambiguity handling | When a checkbox/radio state can't be determined from the source, the app shows a modal asking the user — choices logged per template for auto-resolution on future fills |
 | Validation loop | Semi-automatic — findings shown, fix prompts generated, user approves each batch |
 | Export format | User-chosen at export time (PDF, DOCX, XLSX, HTML) |
 | Terminal | Dual: real PTY shell (xterm.js + node-pty) + prompt template panel side-by-side |
 | LLM auth | OAuth token by default (reads `~/.claude/`), API key fallback |
 | Default LLM | `claude-opus-4-6` for both fill and validation |
+| Default RAG workspace | `ndis` (`https://ndis.profexer.cloud`) — configurable |
 | Package manager | npm only |
 
 ---
@@ -112,12 +115,12 @@ The Python sidecar port is chosen dynamically at startup and passed to Electron 
 
 ---
 
-## 5. Core Pipeline (6 Stages)
+## 5. Core Pipeline (6 Stages — Stage 2 is Conditional)
 
-All stages are discrete, re-runnable Python FastAPI endpoints.
+All stages are discrete, re-runnable Python FastAPI endpoints. **Stage 2 (Replicate) only runs when the uploaded form's editability prevents safe in-place filling** (locked / flattened / scanned). For fillable forms, the pipeline is effectively 5 stages: Ingest → Schema → Fill → Validate → Export.
 
 ### Stage 1 — Ingest & Analyze (`POST /ingest`)
-- User uploads a clean empty source form via drop zone, `File → Open`, or drag-onto-viewer
+- User uploads an empty source form via drop zone, `File → Open`, or drag-onto-viewer
 - Engine detected by file extension: `.pdf` → pdf_engine, `.docx` → docx_engine, `.xlsx` → xlsx_engine, `.html` → html_engine
 - Engine extracts every structural element with exact coordinates into `form_map.json`:
   - Field bounding boxes (x, y, w, h)
@@ -125,17 +128,32 @@ All stages are discrete, re-runnable Python FastAPI endpoints.
   - Border line weights and colors
   - Background fills and images
   - Embedded logos and assets
-- OCR fallback: if PyMuPDF finds no selectable text layer, `ocr.py` runs pytesseract to approximate field positions. A warning is shown in the UI (fidelity ~90%).
-- Output: `form_map.json` — canonical form structure, source of truth for all subsequent stages
+- **Editability detection** also runs at this stage and sets `form_map.editability` to one of:
+  | Flag | Detection signal (PDF) | Resulting path |
+  |------|-------------------------|----------------|
+  | `fillable` | `doc.permissions & PDF_PERM_FORM`, AcroForm widgets present, dry-run `widget.set_value()` succeeds | **Direct fill** of uploaded original |
+  | `locked` | `doc.is_encrypted` or `permissions` blocks modify | **Replicate**, then fill replica |
+  | `flattened` | No widgets present but text layer present (form was visually rendered with no interactive fields) | **Replicate**, then fill replica |
+  | `scanned` | No selectable text layer at all | **Replicate** + OCR fallback to recover field positions |
+  
+  Equivalent signals for other formats: DOCX checks `<w:documentProtection>` and edit restrictions; XLSX checks `sheetProtection` / `workbookProtection`; HTML is virtually always `fillable` via Playwright.
 
-### Stage 2 — Replicate (`POST /replicate`)
-- Builds a pixel-perfect blank replica from `form_map.json`:
-  - **PDF:** ReportLab canvas API reconstructs every element at exact coordinates. Sub-point positioning, exact RGB colors, embedded fonts, precise line weights.
-  - **DOCX:** python-docx rebuilds document structure from extracted styles and layout
-  - **XLSX:** openpyxl rebuilds cell structure, column widths, styles
-  - **HTML:** static HTML + CSS replica with matching dimensions and styling
-- Output: `{filename}_replica.{ext}` — the empty form ready to be filled
-- The uploaded original becomes the permanent left-pane reference. The replica is what gets filled.
+- User can override via `config.fillStrategy` (`auto` | `direct` | `replicate`). Default `auto`.
+- OCR fallback for `scanned`: `ocr.py` runs pytesseract to approximate field positions. A UI warning is shown (fidelity ~90%).
+- Output: `form_map.json` — canonical form structure, source of truth for all subsequent stages, including the chosen `path: "direct" | "replicate"`.
+
+### Stage 2 — Replicate (`POST /replicate`) — CONDITIONAL
+Runs only when `form_map.path === "replicate"` (form is locked, flattened, or scanned). Builds a pixel-perfect blank replica from `form_map.json`:
+- **PDF:** ReportLab canvas API reconstructs every element at exact coordinates. Sub-point positioning, exact RGB colors, embedded fonts, precise line weights.
+- **DOCX:** python-docx rebuilds document structure from extracted styles and layout.
+- **XLSX:** openpyxl rebuilds cell structure, column widths, styles.
+- **HTML:** static HTML + CSS replica with matching dimensions and styling.
+
+Output: `{filename}_replica.{ext}` — the canvas Stage 4 (Fill) will write into.
+
+When `path === "direct"` this stage is skipped entirely. The uploaded original remains the canvas.
+
+The UI surfaces the chosen path with a badge in the Sidebar: 🟢 *Filling original* or 🟡 *Filling replica (locked form detected)* so the user always knows which path is active. A manual override toggle is available next to the badge.
 
 ### Stage 3 — Schema Extraction (`POST /schema`)
 Produces `field_schema.json` — the semantic contract describing what each field is and how to fill it. Uses a hybrid approach so authoritative metadata is trusted when present and LLM Vision fills the gaps.
@@ -200,18 +218,38 @@ Produces `field_schema.json` — the semantic contract describing what each fiel
 The schema is cached alongside `form_map.json` in the template library — re-uploading the same form skips this stage entirely.
 
 ### Stage 4 — Fill (`POST /fill`)
-Content from one or more sources is merged into `field_values.json`, then written into the replica at the coordinates specified in `form_map.json` using the field types and instructions from `field_schema.json`.
+Content from one or more sources is merged into `field_values.json`, then written into the canvas chosen in Stage 1 (uploaded original if `path === "direct"`, replica if `path === "replicate"`) at the coordinates from `form_map.json` using the field types and instructions from `field_schema.json`.
 
 | Source | Mechanism |
 |--------|-----------|
 | Manual terminal | `fill --field name="John Smith"` |
+| Manual UI | Fields panel inputs (one per detected field) |
 | Prompt template | LLM receives template + context → returns structured `field_values.json` |
-| RAG query | `fill --from-rag "query" --workspace ndis` → lightrag CLI → LLM extracts fields |
+| RAG query | `fill --from-rag "query"` (workspace defaults to `ndis`) → lightrag CLI → LLM extracts fields |
 | iMessage | AppleScript reads thread → LLM extracts structured fields |
 | CSV/JSON | `fill --from-csv clients.csv` → field mapping via config |
 | Folder watch | New files in watched folder trigger auto-fill prompt |
 
-Filling is type-aware: checkboxes get the right glyph (`✓` / `✗` / `●` / `☑`) per `checkStyle`, radios mark exactly one option, signatures embed a configured signature image or rendered text, text fields auto-shrink font if content exceeds `maxLength` or bounding box width.
+**Type-aware filling:**
+- **Text:** insert at field coordinates using the form's existing font/size/color from `form_map.json`; auto-shrink font if content exceeds `maxLength` or bounding box width
+- **Checkbox:** insert the correct glyph (`✓` / `✗` / `●` / `☑`) per `checkStyle` — using widget value setting (direct path) or canvas overlay (replicate path)
+- **Radio:** mark exactly one option from the group
+- **Signature:** embed a configured signature image (`config.signatureImage`) or rendered text in the form's signature font
+
+**Ambiguity resolution:** Before committing the fill, the engine inspects every checkbox/radio. If the LLM's source-derived decision is unclear (`confidence < 0.7` or "ask" return value), a modal is surfaced in the UI:
+
+```
+┌─ Ambiguity ──────────────────────────────────────────────┐
+│  Field:        "I agree to terms"                        │
+│  Instructions: "Tick if you agree"                       │
+│  Source said:  "client mentioned reviewing terms but no  │
+│                explicit consent statement"               │
+│                                                          │
+│  [Tick ✓]  [Cross ✗]  [Leave blank]  [Skip]              │
+└──────────────────────────────────────────────────────────┘
+```
+
+User choice is logged to `~/.agent-form-filler/templates/<form_hash>/ambiguity_log.json` keyed by field id, so identical situations on the same form template auto-resolve next time (configurable per-template).
 
 Output: `{filename}_filled_v{n}.{ext}` (versioned snapshot)
 
@@ -313,6 +351,8 @@ config set llm.fill claude
 config set llm.validate claude
 config set claude_runtime.default_runtime freecode
 config set llm.adapters.claude.model claude-haiku-4-5-20251001
+config set fillStrategy auto         # auto | direct | replicate
+config set rag.defaultWorkspace ndis
 config get llm
 
 # Batch
@@ -399,12 +439,15 @@ All secrets come from environment variables. The config file contains no secrets
   },
   "rag": {
     "cli": "/Users/sharan/.local/bin/lightrag",
+    "defaultWorkspace": "ndis",
     "workspaces": {
       "technical": "https://rag.profexer.cloud",
       "ndis":      "https://ndis.profexer.cloud",
       "ctf":       "https://ctf.profexer.cloud"
     }
   },
+  "fillStrategy": "auto",
+  "signatureImage": "",
   "sources": {
     "iMessage": { "enabled": true, "contactFilter": [] },
     "folders":  [],
@@ -427,7 +470,14 @@ All secrets come from environment variables. The config file contains no secrets
 ## 11. Additional Features
 
 ### Template Library
-Every successfully validated form is saved as a reusable template: `form_map.json` + `replica.{ext}` + associated prompt templates. Stored in `~/.agent-form-filler/templates/`. Re-opening the same form type skips Stage 1 (Ingest) entirely — instant replication.
+Every successfully validated form is saved as a reusable template under `~/.agent-form-filler/templates/<form_hash>/`:
+- `form_map.json` (visual structure + editability flag + chosen path)
+- `replica.{ext}` (only present when path === "replicate")
+- `field_schema.json` (semantic field contract)
+- `ambiguity_log.json` (prior user decisions on ambiguous checkboxes/radios)
+- Associated `.prompt.md` files
+
+Re-opening the same form (matched by SHA-256 content hash) skips Stages 1, 2, and 3 entirely — the flow resumes directly at Fill with all caches loaded.
 
 ### Version Snapshots
 Each Fill + Validate cycle writes a numbered snapshot (`filled_v1`, `filled_v2`, …). Sidebar shows history. Roll back by clicking any snapshot — no re-running the pipeline.
@@ -445,17 +495,23 @@ Silent fallback only. Triggers if PyMuPDF detects no text layer in an uploaded P
 ```
 Upload empty form
       ↓
-POST /ingest → form_map.json                         (visual structure)
+POST /ingest → form_map.json                            (visual structure + editability flag)
       ↓
-POST /replicate → {filename}_replica.{ext}           (pixel-perfect blank)
+   ┌─ form_map.path ─┐
+   │  direct         → skip replicate, canvas = uploaded original
+   │  replicate      → POST /replicate → {filename}_replica.{ext}, canvas = replica
+   └──────────────────┘
       ↓
-POST /schema → field_schema.json                     (hybrid: native widgets + LLM Vision)
+POST /schema → field_schema.json                        (hybrid: native widgets + Claude Vision)
       ↓
-Fill content (manual / prompt / RAG / iMessage / CSV)
+Source pull (manual / prompt / RAG[default: ndis] / iMessage / CSV / folder)
       ↓
-POST /fill → {filename}_filled_v{n}.{ext}            (type-aware fill using schema)
+POST /fill                                              (type-aware fill into canvas)
+      ├─ checkbox/radio ambiguous? → modal asks user (decision logged per template)
       ↓
-POST /validate → findings.json                       (pixel diff + Claude Vision)
+{filename}_filled_v{n}.{ext}
+      ↓
+POST /validate → findings.json                          (pixel diff + Claude Vision)
       ↓
 [findings empty?] → YES → POST /export → done
       ↓ NO
@@ -464,4 +520,4 @@ Validation Panel → user approves fix prompts
 Back to POST /fill (iteration n+1, max 5)
 ```
 
-**Template library shortcut:** Re-uploading a previously processed form skips `/ingest`, `/replicate`, and `/schema` entirely — cached `form_map.json`, `replica.{ext}`, and `field_schema.json` are loaded directly, flow resumes at Fill.
+**Template library shortcut:** Re-uploading a previously processed form skips `/ingest`, `/replicate`, and `/schema` entirely — cached `form_map.json`, `replica.{ext}` (if applicable), `field_schema.json`, and `ambiguity_log.json` are loaded directly, flow resumes at Fill.
