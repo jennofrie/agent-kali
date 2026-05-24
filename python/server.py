@@ -2,6 +2,7 @@ import socket
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
+from config import load_config
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -13,6 +14,10 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/config")
+def get_config():
+    return load_config()
 
 if __name__ == "__main__":
     # Bind to OS-assigned port so we know the chosen value before starting uvicorn

@@ -1,0 +1,53 @@
+{
+  "llm": {
+    "fill": "claude",
+    "validate": "claude",
+    "adapters": {
+      "claude":  { "model": "claude-opus-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+      "openai":  { "model": "gpt-4o", "apiKeyEnv": "OPENAI_API_KEY" },
+      "ollama":  { "endpoint": "http://localhost:11434", "model": "llama3.2" },
+      "custom":  { "endpoint": "", "model": "", "apiKeyEnv": "" }
+    }
+  },
+  "claude_runtime": {
+    "auth": "oauth",
+    "oauth_token_path": "~/.claude/",
+    "default_runtime": "claude_code",
+    "auto_detect": true,
+    "runtimes": {
+      "claude_code": {
+        "path": "",
+        "args": ["--dangerously-skip-permissions"]
+      },
+      "freecode": {
+        "path": "~/Desktop/Github/free-code-main",
+        "args": []
+      }
+    }
+  },
+  "rag": {
+    "cli": "/Users/sharan/.local/bin/lightrag",
+    "defaultWorkspace": "ndis",
+    "workspaces": {
+      "technical": "https://rag.profexer.cloud",
+      "ndis":      "https://ndis.profexer.cloud",
+      "ctf":       "https://ctf.profexer.cloud"
+    }
+  },
+  "sources": {
+    "iMessage": { "enabled": true, "contactFilter": [] },
+    "folders":  [],
+    "gmail":    { "enabled": false }
+  },
+  "output": {
+    "defaultFolder": "~/Desktop/",
+    "formats": ["pdf", "docx", "xlsx", "html"]
+  },
+  "validation": {
+    "dpi": 300,
+    "fidelityThreshold": 0.95,
+    "autoFixMaxIterations": 5
+  },
+  "fillStrategy": "auto",
+  "signatureImage": ""
+}
