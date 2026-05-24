@@ -86,6 +86,62 @@ def _int_to_hex(c: int) -> str:
     return f"#{c & 0xFFFFFF:06x}"
 
 
+def fill_pdf_direct(src: Path, out: Path, values: dict) -> Path:
+    doc = fitz.open(str(src))
+    try:
+        for page in doc:
+            try:
+                widget = page.first_widget
+                widgets_iter = None
+            except AttributeError:
+                widget = None
+                widgets_iter = page.widgets()
+            if widgets_iter is not None:
+                for widget in widgets_iter:
+                    name = widget.field_name
+                    if name in values:
+                        v = values[name]
+                        if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                            if v:
+                                # Find the on-state string via button_states(); fall back to "Yes"
+                                try:
+                                    states = widget.button_states()
+                                    normal_states = states.get("normal", [])
+                                    on_state = next((s for s in normal_states if s != "Off"), "Yes")
+                                except Exception:
+                                    on_state = "Yes"
+                                widget.field_value = on_state
+                            else:
+                                widget.field_value = "Off"
+                        else:
+                            widget.field_value = str(v)
+                        widget.update()
+            else:
+                while widget:
+                    name = widget.field_name
+                    if name in values:
+                        v = values[name]
+                        if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                            if v:
+                                try:
+                                    states = widget.button_states()
+                                    normal_states = states.get("normal", [])
+                                    on_state = next((s for s in normal_states if s != "Off"), "Yes")
+                                except Exception:
+                                    on_state = "Yes"
+                                widget.field_value = on_state
+                            else:
+                                widget.field_value = "Off"
+                        else:
+                            widget.field_value = str(v)
+                        widget.update()
+                    widget = widget.next
+        doc.save(str(out))
+    finally:
+        doc.close()
+    return out
+
+
 def replicate_pdf(form_map: dict, out_path: Path) -> Path:
     if not form_map["pages"]:
         raise ValueError("form_map has no pages")
