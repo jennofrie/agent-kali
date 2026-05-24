@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
-import { sidecar } from "./lib/ipc/sidecar";
+import { Sidebar } from "./components/Sidebar/Sidebar";
 
 export default function App() {
-  const [status, setStatus] = useState("...");
-  useEffect(() => {
-    sidecar.get<{ status: string }>("/health")
-      .then(r => setStatus(r.ok ? r.data.status : `error: ${JSON.stringify(r.data)}`))
-      .catch(e => setStatus(`error: ${e.message}`));
-  }, []);
-  return <div className="p-8 text-2xl">sidecar: {status}</div>;
+  return (
+    <div className="flex h-screen w-screen">
+      <Sidebar />
+      <main className="flex-1 p-6 overflow-auto">
+        <p className="text-neutral-400">Open a form to begin.</p>
+      </main>
+    </div>
+  );
 }
