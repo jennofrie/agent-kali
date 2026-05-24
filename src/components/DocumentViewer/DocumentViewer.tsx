@@ -4,7 +4,11 @@ import { useStore } from "../../store";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
-// Vite-compatible worker setup — import.meta.url resolves correctly through Vite's bundler
+// Vite-compatible worker setup — import.meta.url resolves through Vite's bundler.
+// IMPORTANT: the top-level `pdfjs-dist` version (the worker) MUST match the version
+// react-pdf bundles (the API), or pdf.js throws "API version X does not match Worker version Y".
+// pdfjs-dist is pinned to react-pdf's bundled version in package.json; the alignment is
+// guarded by tests/pdfjs-version.test.ts.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url
