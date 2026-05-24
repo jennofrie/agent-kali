@@ -6,7 +6,7 @@ from fastapi import FastAPI
 import uvicorn
 from pydantic import BaseModel
 from config import load_config
-from engines.pdf_engine import build_form_map, replicate_pdf
+from engines.pdf_engine import build_form_map, replicate_pdf, fill_pdf_direct, fill_pdf_replica
 from schema_extractor import extract_schema
 from llm.field_values import extract_field_values
 
@@ -63,6 +63,26 @@ class ExtractRequest(BaseModel):
 @app.post("/extract-values")
 def extract(req: ExtractRequest):
     return extract_field_values(req.schema, req.source_text)
+
+class FillRequest(BaseModel):
+    source_path: str
+    out_path: str
+    path: str  # "direct" | "replicate"
+    schema: dict
+    values: dict
+    replica_path: str | None = None
+
+@app.post("/fill")
+def fill(req: FillRequest):
+    src = Path(req.source_path)
+    out = Path(req.out_path)
+    if req.path == "direct":
+        fill_pdf_direct(src, out, req.values)
+    else:
+        if not req.replica_path:
+            return {"error": "replica_path required for replicate fill"}
+        fill_pdf_replica(Path(req.replica_path), out, req.schema, req.values)
+    return {"filled_path": str(out)}
 
 if __name__ == "__main__":
     # Bind to OS-assigned port so we know the chosen value before starting uvicorn
