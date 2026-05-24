@@ -26,8 +26,20 @@ def get_client() -> Anthropic:
         token = _read_oauth_token()
         if token:
             return Anthropic(auth_token=token)
-    key = os.environ.get(cfg["llm"]["adapters"]["claude"]["apiKeyEnv"], "")
+    key = os.environ.get(cfg["llm"]["adapters"]["claude"]["apiKeyEnv"])
+    if not key:
+        raise EnvironmentError(
+            "No Claude credentials: OAuth token unavailable and "
+            f"{cfg['llm']['adapters']['claude']['apiKeyEnv']} is not set."
+        )
     return Anthropic(api_key=key)
+
+def first_text(msg) -> str:
+    """Return the text of the first text content block, robust to non-text blocks."""
+    for block in msg.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    raise ValueError("Claude response contained no text block")
 
 def complete_with_images(prompt: str, image_paths: list[Path], model: str | None = None) -> str:
     cfg = load_config()
@@ -45,4 +57,4 @@ def complete_with_images(prompt: str, image_paths: list[Path], model: str | None
         model=model, max_tokens=4096,
         messages=[{"role": "user", "content": content}],
     )
-    return msg.content[0].text
+    return first_text(msg)

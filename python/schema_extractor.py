@@ -60,9 +60,8 @@ VISION_PROMPT = """You are analyzing a form image. Return JSON with this exact s
 Only output the JSON. No prose. Coordinates are in PDF points from top-left."""
 
 
-def _render_pages_to_png(pdf_path: Path, dpi: int = 200) -> list[Path]:
+def _render_pages_to_png(pdf_path: Path, out_dir: Path, dpi: int = 200) -> list[Path]:
     doc = fitz.open(str(pdf_path))
-    out_dir = Path(tempfile.mkdtemp())
     paths = []
     try:
         for i, page in enumerate(doc, start=1):
@@ -81,8 +80,9 @@ def _call_claude_vision(prompt: str, png_paths: list[Path]) -> str:
 
 
 def extract_vision_schema(pdf_path: Path) -> list[dict]:
-    pngs = _render_pages_to_png(pdf_path)
-    raw = _call_claude_vision(VISION_PROMPT, pngs)
+    with tempfile.TemporaryDirectory() as td:
+        pngs = _render_pages_to_png(pdf_path, Path(td))
+        raw = _call_claude_vision(VISION_PROMPT, pngs)
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
     return data.get("fields", [])
