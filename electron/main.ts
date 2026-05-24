@@ -53,6 +53,7 @@ function createWindow() {
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    stopSidecar()
     app.quit()
     win = null
   }
