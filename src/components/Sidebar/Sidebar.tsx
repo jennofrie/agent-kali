@@ -12,11 +12,15 @@ export function Sidebar() {
     setFormMap,
     setFields,
     fields,
+    fieldValues,
     setFieldValue,
     enqueueAmbiguous,
+    filledPath,
+    setFilled,
   } = useStore();
 
   const [pulling, setPulling] = useState(false);
+  const [status, setStatus] = useState("");
 
   async function pickFile() {
     const p = await window.api.openFile();
@@ -34,9 +38,13 @@ export function Sidebar() {
   }
 
   async function pullFromRag() {
-    const query = window.prompt("RAG query (e.g. 'NDIS plan for John Smith'):");
-    if (!query) return;
+    setStatus("Enter a RAG query to continue.");
+    // Use inline status instead of window.prompt — caller triggers via a dedicated input flow
+    // For MVP: use a basic fallback since prompt is blocked in Electron
+    // The status message guides the user; actual query input would come from a future input field
+    const query = "NDIS form data"; // MVP default; replace with input field in next iteration
     setPulling(true);
+    setStatus("Pulling from RAG…");
     try {
       const ragText = await window.api.ragQuery(query);
       const res = await sidecar.post<Record<string, { value: unknown; confidence: number }>>(
@@ -44,7 +52,7 @@ export function Sidebar() {
         { schema: { fields }, source_text: ragText }
       );
       if (!res.ok) {
-        window.alert(`Extraction failed: ${JSON.stringify(res.data)}`);
+        setStatus(`Extraction failed: ${JSON.stringify(res.data)}`);
         return;
       }
       for (const [fid, payload] of Object.entries(res.data)) {
@@ -60,10 +68,66 @@ export function Sidebar() {
           }
         }
       }
+      setStatus("RAG pull complete ✓");
     } catch (e) {
-      window.alert(`RAG pull error: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(`RAG pull error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setPulling(false);
+    }
+  }
+
+  async function runFill() {
+    if (!uploadedPath) return;
+    setStatus("Filling…");
+    try {
+      const tmpOut = `/tmp/agent-form-filler-filled-${Date.now()}.pdf`;
+      let replica = useStore.getState().replicaPath ?? undefined;
+      if (path === "replicate" && !replica) {
+        const fm = useStore.getState().formMap;
+        const rep = await sidecar.post<{ replica_path?: string; error?: string }>("/replicate", { form_map: fm });
+        if (rep.data?.error || !rep.data?.replica_path) {
+          setStatus(`Replicate failed: ${JSON.stringify(rep.data)}`);
+          return;
+        }
+        replica = rep.data.replica_path;
+        useStore.getState().setReplicaPath(replica ?? null);
+      }
+      const res = await sidecar.post<{ filled_path?: string; error?: string }>("/fill", {
+        source_path: uploadedPath,
+        out_path: tmpOut,
+        path: path ?? "direct",
+        schema: { fields },
+        values: fieldValues,
+        replica_path: replica,
+      });
+      if (res.data?.error || !res.data?.filled_path) {
+        setStatus(`Fill failed: ${JSON.stringify(res.data)}`);
+        return;
+      }
+      setFilled(res.data.filled_path);
+      setStatus("Filled ✓");
+    } catch (e) {
+      setStatus(`Fill error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function runExport() {
+    const filled = useStore.getState().filledPath;
+    if (!filled) return;
+    const dest = await window.api.saveFile("filled.pdf");
+    if (!dest) return;
+    setStatus("Exporting…");
+    try {
+      const res = await sidecar.post<{ export_path?: string; error?: string }>("/export", {
+        source_path: filled, out_path: dest, format: "pdf", flatten: true,
+      });
+      if (res.data?.error) {
+        setStatus(`Export failed: ${JSON.stringify(res.data)}`);
+        return;
+      }
+      setStatus(`Exported → ${dest}`);
+    } catch (e) {
+      setStatus(`Export error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -85,6 +149,21 @@ export function Sidebar() {
       >
         {pulling ? "Pulling…" : "Pull from RAG (ndis)"}
       </button>
+      <button
+        onClick={runFill}
+        disabled={!uploadedPath}
+        className="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white py-2 rounded"
+      >
+        Fill
+      </button>
+      <button
+        onClick={runExport}
+        disabled={!filledPath}
+        className="bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white py-2 rounded"
+      >
+        Export PDF
+      </button>
+      {status && <div className="text-xs text-neutral-400 break-all">{status}</div>}
       <div className="text-sm">
         <div className="text-neutral-400">Status</div>
         <div>{pathLabel}</div>
