@@ -1,8 +1,10 @@
+import shutil
 import socket
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
+import fitz
 import uvicorn
 from pydantic import BaseModel
 from config import load_config
@@ -83,6 +85,28 @@ def fill(req: FillRequest):
             return {"error": "replica_path required for replicate fill"}
         fill_pdf_replica(Path(req.replica_path), out, req.schema, req.values)
     return {"filled_path": str(out)}
+
+class ExportRequest(BaseModel):
+    source_path: str
+    out_path: str
+    format: str  # "pdf" only in MVP
+    flatten: bool = True
+
+@app.post("/export")
+def export(req: ExportRequest):
+    src = Path(req.source_path)
+    out = Path(req.out_path)
+    if req.format != "pdf":
+        return {"error": f"format {req.format} not supported in MVP"}
+    if req.flatten:
+        doc = fitz.open(str(src))
+        try:
+            doc.save(str(out), garbage=4, deflate=True)
+        finally:
+            doc.close()
+    else:
+        shutil.copy(src, out)
+    return {"export_path": str(out)}
 
 if __name__ == "__main__":
     # Bind to OS-assigned port so we know the chosen value before starting uvicorn
