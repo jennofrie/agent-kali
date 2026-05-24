@@ -1,5 +1,7 @@
 from pathlib import Path
 import fitz  # PyMuPDF
+from reportlab.pdfgen import canvas as rl_canvas
+from reportlab.lib.colors import HexColor
 
 Editability = str  # "fillable" | "locked" | "flattened" | "scanned"
 
@@ -78,3 +80,28 @@ def build_form_map(path: Path) -> dict:
         }
     finally:
         doc.close()
+
+
+def _int_to_hex(c: int) -> str:
+    return f"#{c & 0xFFFFFF:06x}"
+
+
+def replicate_pdf(form_map: dict, out_path: Path) -> Path:
+    if not form_map["pages"]:
+        raise ValueError("form_map has no pages")
+    first = form_map["pages"][0]
+    c = rl_canvas.Canvas(str(out_path), pagesize=(first["width"], first["height"]))
+    for page in form_map["pages"]:
+        c.setPageSize((page["width"], page["height"]))
+        for el in page["text_elements"]:
+            try:
+                c.setFillColor(HexColor(_int_to_hex(el["color"])))
+            except Exception:
+                c.setFillColor(HexColor("#000000"))
+            c.setFont("Helvetica", el["size"])
+            # ReportLab Y origin is bottom-left; PyMuPDF is top-left. Flip.
+            y_rl = page["height"] - el["y"] - el["h"]
+            c.drawString(el["x"], y_rl, el["text"])
+        c.showPage()
+    c.save()
+    return out_path
