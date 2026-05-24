@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { startSidecar, stopSidecar } from './sidecar'
 import { registerSidecarIPC } from './ipc/sidecarProxy'
 import { registerRagIPC } from './ipc/ragHandlers'
+import { registerFileIPC } from './ipc/fileHandlers'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -74,5 +75,6 @@ app.whenReady().then(async () => {
   console.log(`Sidecar ready on port ${port}`)
   registerSidecarIPC()
   registerRagIPC()
+  registerFileIPC()
   createWindow()
 })
