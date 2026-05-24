@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python sidecar
+python/.venv/
+python/__pycache__/
+python/**/__pycache__/
+python/**/*.pyc
