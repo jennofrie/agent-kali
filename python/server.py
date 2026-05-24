@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from config import load_config
 from engines.pdf_engine import build_form_map, replicate_pdf
 from schema_extractor import extract_schema
+from llm.field_values import extract_field_values
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,6 +55,14 @@ def replicate(req: ReplicateRequest):
     out = Path(req.out_path) if req.out_path else Path(tempfile.gettempdir()) / "replica.pdf"
     replicate_pdf(req.form_map, out)
     return {"replica_path": str(out)}
+
+class ExtractRequest(BaseModel):
+    schema: dict
+    source_text: str
+
+@app.post("/extract-values")
+def extract(req: ExtractRequest):
+    return extract_field_values(req.schema, req.source_text)
 
 if __name__ == "__main__":
     # Bind to OS-assigned port so we know the chosen value before starting uvicorn
