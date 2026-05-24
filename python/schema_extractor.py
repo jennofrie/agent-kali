@@ -1,5 +1,7 @@
 from pathlib import Path
 import fitz
+import json
+import tempfile
 
 WIDGET_TYPE_MAP = {
     fitz.PDF_WIDGET_TYPE_TEXT: "text",
@@ -46,3 +48,41 @@ def extract_native_schema(path: Path) -> list[dict]:
         return fields
     finally:
         doc.close()
+
+
+VISION_PROMPT = """You are analyzing a form image. Return JSON with this exact shape:
+{"fields": [{"id": "v1", "type": "text|checkbox|radio|signature|choice", "label": "...",
+"instructions": "form instructions for this field if visible, else empty",
+"checkStyle": "tick|cross|filled|check (only for checkboxes/radios)",
+"required": true|false, "options": ["..."] (only for radio/choice),
+"location": {"page": N, "x": N, "y": N, "w": N, "h": N}}]}
+
+Only output the JSON. No prose. Coordinates are in PDF points from top-left."""
+
+
+def _render_pages_to_png(pdf_path: Path, dpi: int = 200) -> list[Path]:
+    doc = fitz.open(str(pdf_path))
+    out_dir = Path(tempfile.mkdtemp())
+    paths = []
+    try:
+        for i, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(dpi=dpi)
+            png = out_dir / f"page_{i}.png"
+            pix.save(str(png))
+            paths.append(png)
+        return paths
+    finally:
+        doc.close()
+
+
+def _call_claude_vision(prompt: str, png_paths: list[Path]) -> str:
+    from llm.claude_adapter import complete_with_images
+    return complete_with_images(prompt, png_paths)
+
+
+def extract_vision_schema(pdf_path: Path) -> list[dict]:
+    pngs = _render_pages_to_png(pdf_path)
+    raw = _call_claude_vision(VISION_PROMPT, pngs)
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    data = json.loads(raw)
+    return data.get("fields", [])
