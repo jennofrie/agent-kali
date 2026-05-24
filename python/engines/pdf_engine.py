@@ -142,6 +142,13 @@ def fill_pdf_direct(src: Path, out: Path, values: dict) -> Path:
     return out
 
 
+# Glyph map for checkbox/radio overlay.
+# Uses "symbol2" (Noto Sans Symbols 2, bundled in pymupdf-fonts) which carries
+# all four Unicode code-points at U+2713, U+2717, U+25CF, U+2611.
+CHECK_GLYPHS = {"tick": "✓", "cross": "✗", "filled": "●", "check": "☑"}
+_GLYPH_FONT = "symbol2"  # requires pymupdf-fonts package
+
+
 def replicate_pdf(form_map: dict, out_path: Path) -> Path:
     if not form_map["pages"]:
         raise ValueError("form_map has no pages")
@@ -161,3 +168,49 @@ def replicate_pdf(form_map: dict, out_path: Path) -> Path:
         c.showPage()
     c.save()
     return out_path
+
+
+def fill_pdf_replica(replica: Path, out: Path, schema: dict, values: dict) -> Path:
+    """Overlay text and checkbox glyphs onto a replica (flattened/scanned) PDF.
+
+    Coordinates in schema["fields"][*]["location"] use PyMuPDF's top-left origin
+    (x, y are the top-left corner of the field box; h is the box height).
+    insert_text is given (x+2, y+h-2) as an approximation of the text baseline.
+
+    Checkbox/radio glyphs are rendered using the "symbol2" font from the
+    pymupdf-fonts package (Noto Sans Symbols 2), which carries U+2713 (✓),
+    U+2717 (✗), U+25CF (●) and U+2611 (☑).  Base-14 fonts (Helvetica etc.)
+    do NOT contain these code-points — PyMuPDF silently substitutes a bullet,
+    so they would fail a round-trip get_text assertion.
+    """
+    doc = fitz.open(str(replica))
+    try:
+        for field in schema["fields"]:
+            fid = field["id"]
+            if fid not in values:
+                continue
+            v = values[fid]
+            loc = field["location"]
+            page = doc[loc["page"] - 1]
+            ftype = field["type"]
+            if ftype in ("text", "signature", "choice"):
+                if v:
+                    page.insert_text(
+                        (loc["x"] + 2, loc["y"] + loc["h"] - 2),
+                        str(v),
+                        fontname="helv",
+                        fontsize=10,
+                    )
+            elif ftype in ("checkbox", "radio"):
+                if v:
+                    glyph = CHECK_GLYPHS.get(field.get("checkStyle", "tick"), "✓")
+                    page.insert_text(
+                        (loc["x"] + 1, loc["y"] + loc["h"] - 2),
+                        glyph,
+                        fontname=_GLYPH_FONT,
+                        fontsize=12,
+                    )
+        doc.save(str(out))
+    finally:
+        doc.close()
+    return out

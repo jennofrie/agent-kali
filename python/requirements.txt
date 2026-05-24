@@ -2,6 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 # pymupdf 1.24.x has no wheel for Python 3.14; 1.25.5 ships abi3 arm64 wheel
 pymupdf==1.25.5
+pymupdf-fonts==1.0.5
 reportlab==4.2.5
 # pillow 10.4.0 has no cp314 wheel; allow latest patch
 pillow>=10.4.0
