@@ -73,8 +73,12 @@ app.on('activate', () => {
 app.on('before-quit', stopSidecar)
 
 app.whenReady().then(async () => {
-  const port = await startSidecar()
-  console.log(`Sidecar ready on port ${port}`)
+  try {
+    const port = await startSidecar()
+    console.log(`Sidecar ready on port ${port}`)
+  } catch (e) {
+    console.error('Sidecar failed to start:', e)
+  }
   registerSidecarIPC()
   registerRagIPC()
   registerFileIPC()
