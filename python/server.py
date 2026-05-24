@@ -7,6 +7,7 @@ import uvicorn
 from pydantic import BaseModel
 from config import load_config
 from engines.pdf_engine import build_form_map, replicate_pdf
+from schema_extractor import extract_schema
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +35,14 @@ def ingest(req: IngestRequest):
     if p.suffix.lower() != ".pdf":
         return {"error": f"unsupported extension {p.suffix}"}
     return build_form_map(p)
+
+
+class SchemaRequest(BaseModel):
+    file_path: str
+
+@app.post("/schema")
+def schema(req: SchemaRequest):
+    return extract_schema(Path(req.file_path))
 
 
 class ReplicateRequest(BaseModel):

@@ -86,3 +86,34 @@ def extract_vision_schema(pdf_path: Path) -> list[dict]:
     raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(raw)
     return data.get("fields", [])
+
+
+def _overlaps(a: dict, b: dict, tol: float = 8.0) -> bool:
+    la, lb = a["location"], b["location"]
+    if la["page"] != lb["page"]:
+        return False
+    return abs(la["x"] - lb["x"]) < tol and abs(la["y"] - lb["y"]) < tol
+
+
+def merge_schemas(native: list[dict], vision: list[dict]) -> list[dict]:
+    merged = [dict(f) for f in native]
+    for v in vision:
+        match = next((n for n in merged if _overlaps(n, v)), None)
+        if match:
+            # Native authoritative for id/type/label/location; vision adds semantics
+            for k in ("instructions", "checkStyle", "options", "required"):
+                if k in v and k not in match:
+                    match[k] = v[k]
+        else:
+            merged.append(v)
+    return merged
+
+
+def extract_schema(pdf_path: Path) -> dict:
+    native = extract_native_schema(pdf_path)
+    try:
+        vision = extract_vision_schema(pdf_path)
+    except Exception as e:
+        print(f"[schema] vision failed: {e}; using native only", flush=True)
+        vision = []
+    return {"fields": merge_schemas(native, vision)}
