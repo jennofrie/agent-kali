@@ -86,56 +86,55 @@ def _int_to_hex(c: int) -> str:
     return f"#{c & 0xFFFFFF:06x}"
 
 
+def _lookup_widget_value(values: dict, field_name: str):
+    """Resolve a value for a widget, accepting both the raw widget name ("name")
+    and the schema id form ("native_<name>") used by the UI / extracted schema.
+    Returns (value, found)."""
+    schema_key = f"native_{field_name}"
+    if schema_key in values:
+        return values[schema_key], True
+    if field_name in values:
+        return values[field_name], True
+    return None, False
+
+
+def _apply_widget_value(widget, v) -> None:
+    if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+        if v:
+            # Find the on-state string via button_states(); fall back to "Yes"
+            try:
+                states = widget.button_states()
+                normal_states = states.get("normal", [])
+                on_state = next((s for s in normal_states if s != "Off"), "Yes")
+            except Exception:
+                on_state = "Yes"
+            widget.field_value = on_state
+        else:
+            widget.field_value = "Off"
+    else:
+        widget.field_value = str(v)
+    widget.update()
+
+
+def _iter_widgets(page):
+    try:
+        widget = page.first_widget
+    except AttributeError:
+        yield from page.widgets()
+        return
+    while widget:
+        yield widget
+        widget = widget.next
+
+
 def fill_pdf_direct(src: Path, out: Path, values: dict) -> Path:
     doc = fitz.open(str(src))
     try:
         for page in doc:
-            try:
-                widget = page.first_widget
-                widgets_iter = None
-            except AttributeError:
-                widget = None
-                widgets_iter = page.widgets()
-            if widgets_iter is not None:
-                for widget in widgets_iter:
-                    name = widget.field_name
-                    if name in values:
-                        v = values[name]
-                        if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
-                            if v:
-                                # Find the on-state string via button_states(); fall back to "Yes"
-                                try:
-                                    states = widget.button_states()
-                                    normal_states = states.get("normal", [])
-                                    on_state = next((s for s in normal_states if s != "Off"), "Yes")
-                                except Exception:
-                                    on_state = "Yes"
-                                widget.field_value = on_state
-                            else:
-                                widget.field_value = "Off"
-                        else:
-                            widget.field_value = str(v)
-                        widget.update()
-            else:
-                while widget:
-                    name = widget.field_name
-                    if name in values:
-                        v = values[name]
-                        if widget.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
-                            if v:
-                                try:
-                                    states = widget.button_states()
-                                    normal_states = states.get("normal", [])
-                                    on_state = next((s for s in normal_states if s != "Off"), "Yes")
-                                except Exception:
-                                    on_state = "Yes"
-                                widget.field_value = on_state
-                            else:
-                                widget.field_value = "Off"
-                        else:
-                            widget.field_value = str(v)
-                        widget.update()
-                    widget = widget.next
+            for widget in _iter_widgets(page):
+                v, found = _lookup_widget_value(values, widget.field_name)
+                if found:
+                    _apply_widget_value(widget, v)
         doc.save(str(out))
     finally:
         doc.close()
