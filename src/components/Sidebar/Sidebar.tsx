@@ -21,6 +21,7 @@ export function Sidebar() {
 
   const [pulling, setPulling] = useState(false);
   const [status, setStatus] = useState("");
+  const [ragQueryText, setRagQueryText] = useState("");
 
   async function pickFile() {
     const p = await window.api.openFile();
@@ -38,11 +39,11 @@ export function Sidebar() {
   }
 
   async function pullFromRag() {
-    setStatus("Enter a RAG query to continue.");
-    // Use inline status instead of window.prompt — caller triggers via a dedicated input flow
-    // For MVP: use a basic fallback since prompt is blocked in Electron
-    // The status message guides the user; actual query input would come from a future input field
-    const query = "NDIS form data"; // MVP default; replace with input field in next iteration
+    const query = ragQueryText.trim();
+    if (!query) {
+      setStatus("Enter a RAG query first.");
+      return;
+    }
     setPulling(true);
     setStatus("Pulling from RAG…");
     try {
@@ -142,9 +143,16 @@ export function Sidebar() {
       <button onClick={pickFile} className="bg-blue-600 hover:bg-blue-500 text-white py-2 rounded">
         Open Form
       </button>
+      <input
+        type="text"
+        value={ragQueryText}
+        onChange={(e) => setRagQueryText(e.target.value)}
+        placeholder="RAG query, e.g. 'NDIS plan for John Smith'"
+        className="bg-neutral-800 px-2 py-1 rounded text-sm placeholder:text-neutral-600"
+      />
       <button
         onClick={pullFromRag}
-        disabled={!uploadedPath || pulling}
+        disabled={!uploadedPath || pulling || !ragQueryText.trim()}
         className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white py-2 rounded"
       >
         {pulling ? "Pulling…" : "Pull from RAG (ndis)"}
