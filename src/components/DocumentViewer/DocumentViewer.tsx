@@ -24,6 +24,7 @@ export function DocumentViewer() {
   useEffect(() => {
     if (!fileToShow) {
       setFileData(null);
+      setNumPages(0);
       setLoadError(null);
       loadedPathRef.current = null;
       return;
@@ -32,18 +33,23 @@ export function DocumentViewer() {
     if (loadedPathRef.current === fileToShow) return;
 
     setFileData(null);
+    setNumPages(0);
     setLoadError(null);
     loadedPathRef.current = fileToShow;
 
     // IPC bytes approach: read the file in the main process and pass bytes across.
     // This is far more reliable than file:// URLs in Electron because it bypasses
     // all CORS / webSecurity checks entirely — the renderer never fetches a URL.
+    const pathAtStart = fileToShow;
     window.api
       .readFile(fileToShow)
       .then((bytes) => {
+        // Ignore a stale response if the path changed while this read was in flight.
+        if (loadedPathRef.current !== pathAtStart) return;
         setFileData({ data: new Uint8Array(bytes) });
       })
       .catch((err: unknown) => {
+        if (loadedPathRef.current !== pathAtStart) return;
         const msg = err instanceof Error ? err.message : String(err);
         setLoadError(`Failed to read file: ${msg}`);
       });
@@ -82,7 +88,7 @@ export function DocumentViewer() {
       >
         {Array.from({ length: numPages }, (_, i) => (
           <Page
-            key={i}
+            key={i + 1}
             pageNumber={i + 1}
             className="mb-4"
             width={700}
