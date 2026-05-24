@@ -1,4 +1,3 @@
-import sys
 import socket
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
