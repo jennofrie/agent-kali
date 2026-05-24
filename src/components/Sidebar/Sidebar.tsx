@@ -1,8 +1,22 @@
+import { useState } from "react";
 import { useStore } from "../../store";
 import { sidecar } from "../../lib/ipc/sidecar";
 
 export function Sidebar() {
-  const { uploadedPath, editability, path, setUploaded, setEditability, setFormMap, setFields } = useStore();
+  const {
+    uploadedPath,
+    editability,
+    path,
+    setUploaded,
+    setEditability,
+    setFormMap,
+    setFields,
+    fields,
+    setFieldValue,
+    enqueueAmbiguous,
+  } = useStore();
+
+  const [pulling, setPulling] = useState(false);
 
   async function pickFile() {
     const p = await window.api.openFile();
@@ -19,6 +33,40 @@ export function Sidebar() {
     setFields(schemaRes.data?.fields ?? []);
   }
 
+  async function pullFromRag() {
+    const query = window.prompt("RAG query (e.g. 'NDIS plan for John Smith'):");
+    if (!query) return;
+    setPulling(true);
+    try {
+      const ragText = await window.api.ragQuery(query);
+      const res = await sidecar.post<Record<string, { value: unknown; confidence: number }>>(
+        "/extract-values",
+        { schema: { fields }, source_text: ragText }
+      );
+      if (!res.ok) {
+        window.alert(`Extraction failed: ${JSON.stringify(res.data)}`);
+        return;
+      }
+      for (const [fid, payload] of Object.entries(res.data)) {
+        if (payload && typeof payload.confidence === "number" && payload.confidence >= 0.7) {
+          setFieldValue(fid, payload.value as string | boolean);
+        } else {
+          const field = fields.find((f) => f.id === fid);
+          // Only checkboxes/radios need disambiguation; low-confidence text just fills as best guess
+          if (field && (field.type === "checkbox" || field.type === "radio")) {
+            enqueueAmbiguous({ field, sourceContext: ragText.slice(0, 240) });
+          } else if (field) {
+            setFieldValue(fid, payload.value as string | boolean);
+          }
+        }
+      }
+    } catch (e) {
+      window.alert(`RAG pull error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPulling(false);
+    }
+  }
+
   const pathLabel =
     path === "direct"    ? "🟢 Filling original" :
     path === "replicate" ? "🟡 Filling replica (locked form detected)" :
@@ -29,6 +77,13 @@ export function Sidebar() {
       <h1 className="text-lg font-semibold">agent-form-filler</h1>
       <button onClick={pickFile} className="bg-blue-600 hover:bg-blue-500 text-white py-2 rounded">
         Open Form
+      </button>
+      <button
+        onClick={pullFromRag}
+        disabled={!uploadedPath || pulling}
+        className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white py-2 rounded"
+      >
+        {pulling ? "Pulling…" : "Pull from RAG (ndis)"}
       </button>
       <div className="text-sm">
         <div className="text-neutral-400">Status</div>
