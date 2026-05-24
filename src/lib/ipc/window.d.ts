@@ -7,6 +7,7 @@ declare global {
       ragQuery: (query: string, workspace?: string) => Promise<string>;
       openFile: () => Promise<string | null>;
       saveFile: (defaultName: string) => Promise<string | null>;
+      readFile: (filePath: string) => Promise<number[]>;
     };
   }
 }

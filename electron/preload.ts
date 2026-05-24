@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.invoke("rag:query", query, workspace),
   openFile: () => ipcRenderer.invoke("file:open"),
   saveFile: (defaultName: string) => ipcRenderer.invoke("file:save", defaultName),
+  readFile: (filePath: string): Promise<number[]> =>
+    ipcRenderer.invoke("file:read", filePath),
 });

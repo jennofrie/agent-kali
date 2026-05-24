@@ -1,6 +1,13 @@
 import { dialog, ipcMain, BrowserWindow } from "electron";
+import { readFileSync } from "node:fs";
 
 export function registerFileIPC() {
+  ipcMain.handle("file:read", (_evt, filePath: string): number[] => {
+    const buf = readFileSync(filePath);
+    // Return as a plain number[] so it survives the IPC serialisation boundary
+    return Array.from(buf);
+  });
+
   ipcMain.handle("file:open", async () => {
     const win = BrowserWindow.getFocusedWindow();
     const opts = {

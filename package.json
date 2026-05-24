@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "pdfjs-dist": "^5.7.284",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-pdf": "^10.4.1",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.13"
   },
