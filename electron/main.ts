@@ -1,4 +1,5 @@
 import { app, BrowserWindow } from 'electron'
+import { startSidecar, stopSidecar } from './sidecar'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -65,4 +66,10 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.on('before-quit', stopSidecar)
+
+app.whenReady().then(async () => {
+  const port = await startSidecar()
+  console.log(`Sidecar ready on port ${port}`)
+  createWindow()
+})
