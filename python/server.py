@@ -1,8 +1,11 @@
 import socket
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 import uvicorn
+from pydantic import BaseModel
 from config import load_config
+from engines.pdf_engine import build_form_map
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,6 +21,18 @@ def health():
 @app.get("/config")
 def get_config():
     return load_config()
+
+class IngestRequest(BaseModel):
+    file_path: str
+
+@app.post("/ingest")
+def ingest(req: IngestRequest):
+    p = Path(req.file_path)
+    if not p.exists():
+        return {"error": "file not found"}
+    if p.suffix.lower() != ".pdf":
+        return {"error": f"unsupported extension {p.suffix}"}
+    return build_form_map(p)
 
 if __name__ == "__main__":
     # Bind to OS-assigned port so we know the chosen value before starting uvicorn
