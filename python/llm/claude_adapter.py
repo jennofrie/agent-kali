@@ -1,23 +1,47 @@
 import os
 import json
 import base64
+import subprocess
 from pathlib import Path
 from anthropic import Anthropic
 from config import load_config
 
+def _parse_token_blob(raw: str) -> str | None:
+    """Extract an access token from a credentials blob (JSON or bare token)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data.get("claudeAiOauth", {}).get("accessToken") or data.get("accessToken")
+    except Exception:
+        return raw  # bare token string
+
+def _read_keychain_token() -> str | None:
+    """On macOS, Claude Code stores its OAuth credentials in the Keychain
+    (service 'Claude Code-credentials'), not in a file. Read it from there."""
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            return _parse_token_blob(out.stdout)
+    except Exception:
+        return None
+    return None
+
 def _read_oauth_token() -> str | None:
-    """Read Claude Code OAuth access token from ~/.claude/ if present."""
+    """Resolve a Claude OAuth access token: file first, then macOS Keychain."""
     cfg = load_config()
     token_dir = Path(cfg.get("claude_runtime", {}).get("oauth_token_path", "~/.claude/")).expanduser()
     creds = token_dir / ".credentials.json"
     if creds.exists():
         try:
-            data = json.loads(creds.read_text())
-            oauth = data.get("claudeAiOauth", {})
-            return oauth.get("accessToken") or data.get("accessToken")
+            return _parse_token_blob(creds.read_text())
         except Exception:
-            return None
-    return None
+            pass
+    return _read_keychain_token()
 
 def get_client() -> Anthropic:
     cfg = load_config()
