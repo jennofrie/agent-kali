@@ -2,28 +2,47 @@ import { useStore } from "../../store";
 
 export function FieldsPanel() {
   const { fields, fieldValues, setFieldValue } = useStore();
+  const filledCount = fields.filter((field) => {
+    const value = fieldValues[field.id];
+    return value !== undefined && value !== "" && value !== false;
+  }).length;
+
   if (fields.length === 0) {
-    return <div className="p-4 text-neutral-500 text-sm">No fields detected yet.</div>;
+    return (
+      <div className="fields-panel empty">
+        <span className="eyebrow">Field map</span>
+        <h2>No fields detected</h2>
+        <p>Open a form to extract fillable fields and semantic labels.</p>
+      </div>
+    );
   }
+
   return (
-    <div className="p-4 overflow-auto space-y-3">
-      <h2 className="font-semibold">Fields ({fields.length})</h2>
+    <div className="fields-panel">
+      <div className="fields-header">
+        <div>
+          <span className="eyebrow">Field map</span>
+          <h2>{fields.length} fields</h2>
+        </div>
+        <span>{filledCount}/{fields.length}</span>
+      </div>
       {fields.map((f) => (
-        <div key={f.id} className="bg-neutral-900 p-3 rounded">
-          <div className="text-sm text-neutral-300 mb-1">
-            {f.label} <span className="text-neutral-500">({f.type})</span>
+        <div key={f.id} className="field-card">
+          <div className="field-label">
+            <strong>{f.label}</strong>
+            <span>{f.type}</span>
             {f.instructions && (
-              <div className="text-xs text-neutral-500 italic">{f.instructions}</div>
+              <p>{f.instructions}</p>
             )}
           </div>
           {f.type === "text" || f.type === "signature" ? (
             <input
-              className="w-full bg-neutral-800 px-2 py-1 rounded text-sm"
+              className="field-input"
               value={(fieldValues[f.id] as string) ?? ""}
               onChange={(e) => setFieldValue(f.id, e.target.value)}
             />
           ) : f.type === "checkbox" ? (
-            <label className="flex items-center gap-2 text-sm">
+            <label className="check-row">
               <input
                 type="checkbox"
                 checked={Boolean(fieldValues[f.id])}
@@ -32,9 +51,9 @@ export function FieldsPanel() {
               {f.checkStyle ? `(${f.checkStyle})` : null}
             </label>
           ) : f.type === "radio" && f.options ? (
-            <div className="space-y-1">
+            <div className="choice-stack">
               {f.options.map((opt) => (
-                <label key={opt} className="flex items-center gap-2 text-sm">
+                <label key={opt}>
                   <input
                     type="radio"
                     name={f.id}
@@ -47,7 +66,7 @@ export function FieldsPanel() {
             </div>
           ) : f.type === "choice" && f.options ? (
             <select
-              className="w-full bg-neutral-800 px-2 py-1 rounded text-sm"
+              className="field-input"
               value={(fieldValues[f.id] as string) ?? ""}
               onChange={(e) => setFieldValue(f.id, e.target.value)}
             >
@@ -55,7 +74,7 @@ export function FieldsPanel() {
               {f.options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
             </select>
           ) : (
-            <div className="text-xs text-neutral-500">Unsupported field type</div>
+            <div className="unsupported-field">Unsupported field type</div>
           )}
         </div>
       ))}

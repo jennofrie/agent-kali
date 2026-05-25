@@ -1,18 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore } from "../../store";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
-// Vite-compatible worker setup — import.meta.url resolves through Vite's bundler.
-// IMPORTANT: the top-level `pdfjs-dist` version (the worker) MUST match the version
-// react-pdf bundles (the API), or pdf.js throws "API version X does not match Worker version Y".
-// pdfjs-dist is pinned to react-pdf's bundled version in package.json; the alignment is
-// guarded by tests/pdfjs-version.test.ts.
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url
-).toString();
+// Keep the worker inside the Vite bundle so it always comes from the installed
+// pdfjs-dist version. A CDN or stale copied worker causes the PDF.js
+// "API version does not match Worker version" runtime failure.
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 export function DocumentViewer() {
   const { uploadedPath, filledPath } = useStore();
@@ -61,44 +58,94 @@ export function DocumentViewer() {
 
   if (!fileToShow) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-500">
-        No file loaded.
-      </div>
+      <ViewerFrame filled={Boolean(filledPath)} pageCount={numPages}>
+        <ViewerState title="No file loaded" detail="Open a PDF form to start the ingest pipeline." />
+      </ViewerFrame>
     );
   }
 
   if (loadError) {
     return (
-      <div className="flex-1 flex items-center justify-center text-red-400 px-6">
-        {loadError}
-      </div>
+      <ViewerFrame filled={Boolean(filledPath)} pageCount={numPages}>
+        <ViewerState tone="error" title="PDF load error" detail={loadError} />
+      </ViewerFrame>
     );
   }
 
   if (!fileData) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-400">
-        Loading…
-      </div>
+      <ViewerFrame filled={Boolean(filledPath)} pageCount={numPages}>
+        <ViewerState title="Loading document" detail="Reading PDF bytes through the Electron bridge." />
+      </ViewerFrame>
     );
   }
 
   return (
-    <div className="flex-1 overflow-auto bg-neutral-950 p-4">
-      <Document
-        file={fileData}
-        onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-        onLoadError={(err) => setLoadError(`PDF load error: ${err.message}`)}
-      >
-        {Array.from({ length: numPages }, (_, i) => (
-          <Page
-            key={i + 1}
-            pageNumber={i + 1}
-            className="mb-4"
-            width={700}
-          />
-        ))}
-      </Document>
+    <ViewerFrame filled={Boolean(filledPath)} pageCount={numPages}>
+      <div className="pdf-stage">
+        <Document
+          file={fileData}
+          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+          onLoadError={(err) => setLoadError(err.message)}
+          loading={<ViewerState title="Rendering pages" detail="Preparing the document preview." compact />}
+        >
+          {Array.from({ length: numPages }, (_, i) => (
+            <Page
+              key={i + 1}
+              pageNumber={i + 1}
+              className="pdf-page"
+              width={760}
+              loading={<div className="page-loading">Page {i + 1}</div>}
+            />
+          ))}
+        </Document>
+      </div>
+    </ViewerFrame>
+  );
+}
+
+function ViewerFrame({
+  children,
+  filled,
+  pageCount,
+}: {
+  children: ReactNode;
+  filled: boolean;
+  pageCount: number;
+}) {
+  return (
+    <div className="viewer-scroll">
+      <div className="viewer-toolbar">
+        <div>
+          <span className="eyebrow">Output</span>
+          <strong>{filled ? "Filled PDF Preview" : "Source PDF Preview"}</strong>
+        </div>
+        <div className="viewer-meta">
+          <span>{pageCount || "?"} pages</span>
+          <span>{filled ? "filled snapshot" : "source form"}</span>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ViewerState({
+  title,
+  detail,
+  tone = "default",
+  compact = false,
+}: {
+  title: string;
+  detail: string;
+  tone?: "default" | "error";
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? "viewer-state compact" : "viewer-state"}>
+      <div className={tone === "error" ? "state-dot error" : "state-dot"} />
+      <h2>{title}</h2>
+      <p>{detail}</p>
     </div>
   );
 }

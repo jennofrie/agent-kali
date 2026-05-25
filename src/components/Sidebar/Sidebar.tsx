@@ -133,53 +133,90 @@ export function Sidebar() {
   }
 
   const pathLabel =
-    path === "direct"    ? "🟢 Filling original" :
-    path === "replicate" ? "🟡 Filling replica (locked form detected)" :
-    uploadedPath         ? "Analyzing…" : "No file";
+    path === "direct"    ? "Filling original" :
+    path === "replicate" ? "Filling replica" :
+    uploadedPath         ? "Analyzing" : "No file";
+  const fieldCompletion = fields.length
+    ? Math.round((Object.keys(fieldValues).filter((id) => fieldValues[id] !== "" && fieldValues[id] !== undefined).length / fields.length) * 100)
+    : 0;
+  const fileName = uploadedPath ? uploadedPath.split("/").at(-1) : "No document selected";
 
   return (
-    <aside className="w-72 h-full bg-neutral-900 p-4 flex flex-col gap-4 border-r border-neutral-800">
-      <h1 className="text-lg font-semibold">agent-form-filler</h1>
-      <button onClick={pickFile} className="bg-blue-600 hover:bg-blue-500 text-white py-2 rounded">
+    <aside className="control-panel">
+      <div className="panel-heading">
+        <span className="eyebrow">Workspace</span>
+        <h2>Form console</h2>
+      </div>
+
+      <section className="score-card">
+        <div className="score-ring">{fieldCompletion}</div>
+        <div>
+          <strong>{fieldCompletion >= 80 ? "Ready" : uploadedPath ? "In progress" : "Waiting"}</strong>
+          <span>{fields.length} detected fields</span>
+        </div>
+      </section>
+
+      <section className="document-card">
+        <span className="eyebrow">Active document</span>
+        <strong title={uploadedPath ?? undefined}>{fileName}</strong>
+        <div className="doc-meta">
+          <span>{pathLabel}</span>
+          <span>{editability ?? "unknown"}</span>
+        </div>
+      </section>
+
+      <button onClick={pickFile} className="primary-action">
         Open Form
       </button>
-      <input
-        type="text"
-        value={ragQueryText}
-        onChange={(e) => setRagQueryText(e.target.value)}
-        placeholder="RAG query, e.g. 'NDIS plan for John Smith'"
-        className="bg-neutral-800 px-2 py-1 rounded text-sm placeholder:text-neutral-600"
-      />
-      <button
-        onClick={pullFromRag}
-        disabled={!uploadedPath || pulling || !ragQueryText.trim()}
-        className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white py-2 rounded"
-      >
-        {pulling ? "Pulling…" : "Pull from RAG (ndis)"}
-      </button>
-      <button
-        onClick={runFill}
-        disabled={!uploadedPath}
-        className="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white py-2 rounded"
-      >
-        Fill
-      </button>
-      <button
-        onClick={runExport}
-        disabled={!filledPath}
-        className="bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white py-2 rounded"
-      >
-        Export PDF
-      </button>
-      {status && <div className="text-xs text-neutral-400 break-all">{status}</div>}
-      <div className="text-sm">
-        <div className="text-neutral-400">Status</div>
-        <div>{pathLabel}</div>
+
+      <section className="action-group">
+        <label>
+          <span>RAG source</span>
+          <input
+            type="text"
+            value={ragQueryText}
+            onChange={(e) => setRagQueryText(e.target.value)}
+            placeholder="NDIS plan, client notes, support evidence"
+          />
+        </label>
+        <button
+          onClick={pullFromRag}
+          disabled={!uploadedPath || pulling || !ragQueryText.trim()}
+          className="secondary-action"
+        >
+          {pulling ? "Pulling..." : "Pull from RAG"}
+        </button>
+      </section>
+
+      <div className="split-actions">
+        <button onClick={runFill} disabled={!uploadedPath} className="secondary-action violet">
+          Fill
+        </button>
+        <button onClick={runExport} disabled={!filledPath} className="secondary-action amber">
+          Export PDF
+        </button>
       </div>
-      {uploadedPath && (
-        <div className="text-xs text-neutral-500 break-all">{uploadedPath}</div>
-      )}
-      <div className="text-xs text-neutral-500 mt-auto">Editability: {editability ?? "—"}</div>
+
+      {status && <div className="status-log">{status}</div>}
+
+      <section className="pipeline-card">
+        <span className="eyebrow">Pipeline</span>
+        <Step label="Ingest" active={Boolean(uploadedPath)} />
+        <Step label="Schema" active={fields.length > 0} />
+        <Step label="Fill" active={Boolean(filledPath)} />
+        <Step label="Export" active={status.startsWith("Exported")} />
+      </section>
+
+      {uploadedPath && <div className="path-readout">{uploadedPath}</div>}
     </aside>
+  );
+}
+
+function Step({ label, active }: { label: string; active: boolean }) {
+  return (
+    <div className={active ? "pipeline-step active" : "pipeline-step"}>
+      <span />
+      <strong>{label}</strong>
+    </div>
   );
 }
