@@ -65,6 +65,30 @@ def first_text(msg) -> str:
             return block.text
     raise ValueError("Claude response contained no text block")
 
+def complete_text(prompt: str, model: str | None = None, max_tokens: int = 2048,
+                  retries: int = 3) -> str:
+    """Text-only completion with retry-on-rate-limit (handles transient 429s)."""
+    import time
+    from anthropic import RateLimitError, APIStatusError
+    cfg = load_config()
+    model = model or cfg["llm"].get("extractModel") or cfg["llm"]["adapters"]["claude"]["model"]
+    client = get_client()
+    last_err = None
+    for attempt in range(retries):
+        try:
+            msg = client.messages.create(
+                model=model, max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return first_text(msg)
+        except (RateLimitError, APIStatusError) as e:
+            last_err = e
+            status = getattr(e, "status_code", None)
+            if status not in (429, 529) and not isinstance(e, RateLimitError):
+                raise
+            time.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+    raise last_err
+
 def complete_with_images(prompt: str, image_paths: list[Path], model: str | None = None) -> str:
     cfg = load_config()
     model = model or cfg["llm"]["adapters"]["claude"]["model"]

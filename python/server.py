@@ -66,6 +66,22 @@ class ExtractRequest(BaseModel):
 def extract(req: ExtractRequest):
     return extract_field_values(req.schema, req.source_text)
 
+class FolderExtractRequest(BaseModel):
+    folder_path: str
+    schema: dict
+
+@app.post("/extract-from-folder")
+def extract_from_folder(req: FolderExtractRequest):
+    from sources.folder_source import read_folder_text
+    folder = Path(req.folder_path)
+    if not folder.is_dir():
+        return {"error": "folder not found"}
+    text, files = read_folder_text(folder)
+    if not text.strip():
+        return {"error": "no readable documents found in folder", "files_read": files}
+    values = extract_field_values(req.schema, text)
+    return {"values": values, "files_read": files, "chars": len(text)}
+
 class FillRequest(BaseModel):
     source_path: str
     out_path: str

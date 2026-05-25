@@ -20,6 +20,15 @@ export function registerFileIPC() {
     return result.canceled ? null : result.filePaths[0];
   });
 
+  ipcMain.handle("file:openFolder", async () => {
+    const win = BrowserWindow.getFocusedWindow();
+    const opts = { properties: ["openDirectory" as const] };
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts);
+    return result.canceled ? null : result.filePaths[0];
+  });
+
   ipcMain.handle("file:save", async (_evt, defaultName: string) => {
     const win = BrowserWindow.getFocusedWindow();
     const opts = {

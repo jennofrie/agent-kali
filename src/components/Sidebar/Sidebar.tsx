@@ -38,40 +38,96 @@ export function Sidebar() {
     setFields(schemaRes.data?.fields ?? []);
   }
 
+  type Extracted = Record<string, { value: unknown; confidence: number }>;
+
+  // Shared by both sources: high-confidence values auto-fill; low-confidence
+  // checkbox/radio decisions are queued for the ambiguity modal.
+  function applyValues(values: Extracted, sourceContext: string) {
+    let filled = 0;
+    let ambiguous = 0;
+    for (const [fid, payload] of Object.entries(values)) {
+      const ok =
+        payload &&
+        typeof payload.confidence === "number" &&
+        payload.confidence >= 0.7 &&
+        payload.value !== "" &&
+        payload.value !== null &&
+        payload.value !== undefined;
+      if (ok) {
+        setFieldValue(fid, payload.value as string | boolean);
+        filled++;
+      } else {
+        const field = fields.find((f) => f.id === fid);
+        if (field && (field.type === "checkbox" || field.type === "radio")) {
+          enqueueAmbiguous({ field, sourceContext });
+          ambiguous++;
+        } else if (field && payload?.value) {
+          setFieldValue(fid, payload.value as string | boolean);
+          filled++;
+        }
+      }
+    }
+    return { filled, ambiguous };
+  }
+
   async function pullFromRag() {
+    if (!uploadedPath) {
+      setStatus("Open a form first.");
+      return;
+    }
     const query = ragQueryText.trim();
     if (!query) {
       setStatus("Enter a RAG query first.");
       return;
     }
     setPulling(true);
-    setStatus("Pulling from RAG…");
+    setStatus("Querying RAG (ndis)…");
     try {
       const ragText = await window.api.ragQuery(query);
-      const res = await sidecar.post<Record<string, { value: unknown; confidence: number }>>(
-        "/extract-values",
-        { schema: { fields }, source_text: ragText }
-      );
+      setStatus("Extracting fields…");
+      const res = await sidecar.post<Extracted>("/extract-values", {
+        schema: { fields },
+        source_text: ragText,
+      });
       if (!res.ok) {
         setStatus(`Extraction failed: ${JSON.stringify(res.data)}`);
         return;
       }
-      for (const [fid, payload] of Object.entries(res.data)) {
-        if (payload && typeof payload.confidence === "number" && payload.confidence >= 0.7) {
-          setFieldValue(fid, payload.value as string | boolean);
-        } else {
-          const field = fields.find((f) => f.id === fid);
-          // Only checkboxes/radios need disambiguation; low-confidence text just fills as best guess
-          if (field && (field.type === "checkbox" || field.type === "radio")) {
-            enqueueAmbiguous({ field, sourceContext: ragText.slice(0, 240) });
-          } else if (field) {
-            setFieldValue(fid, payload.value as string | boolean);
-          }
-        }
-      }
-      setStatus("RAG pull complete ✓");
+      const { filled, ambiguous } = applyValues(res.data, ragText.slice(0, 240));
+      setStatus(`RAG: filled ${filled} field(s)${ambiguous ? `, ${ambiguous} need review` : ""} ✓`);
     } catch (e) {
-      setStatus(`RAG pull error: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(`RAG error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPulling(false);
+    }
+  }
+
+  async function pullFromFolder() {
+    if (!uploadedPath) {
+      setStatus("Open a form first.");
+      return;
+    }
+    const dir = await window.api.openFolder();
+    if (!dir) return;
+    setPulling(true);
+    setStatus("Reading folder & extracting…");
+    try {
+      const res = await sidecar.post<{
+        values?: Extracted;
+        files_read?: string[];
+        error?: string;
+      }>("/extract-from-folder", { folder_path: dir, schema: { fields } });
+      if (!res.ok || res.data?.error) {
+        setStatus(`Folder extract failed: ${JSON.stringify(res.data)}`);
+        return;
+      }
+      const { filled, ambiguous } = applyValues(res.data.values ?? {}, `folder: ${dir}`);
+      const n = res.data.files_read?.length ?? 0;
+      setStatus(
+        `Folder: read ${n} file(s), filled ${filled}${ambiguous ? `, ${ambiguous} need review` : ""} ✓`,
+      );
+    } catch (e) {
+      setStatus(`Folder error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setPulling(false);
     }
@@ -171,12 +227,12 @@ export function Sidebar() {
 
       <section className="action-group">
         <label>
-          <span>RAG source</span>
+          <span>Auto-fill source</span>
           <input
             type="text"
             value={ragQueryText}
             onChange={(e) => setRagQueryText(e.target.value)}
-            placeholder="NDIS plan, client notes, support evidence"
+            placeholder="RAG query — e.g. Tara Ford NDIS details"
           />
         </label>
         <button
@@ -184,7 +240,14 @@ export function Sidebar() {
           disabled={!uploadedPath || pulling || !ragQueryText.trim()}
           className="secondary-action"
         >
-          {pulling ? "Pulling..." : "Pull from RAG"}
+          {pulling ? "Working…" : "Pull from RAG (ndis)"}
+        </button>
+        <button
+          onClick={pullFromFolder}
+          disabled={!uploadedPath || pulling}
+          className="secondary-action"
+        >
+          Pull from Local Folder…
         </button>
       </section>
 

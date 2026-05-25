@@ -2,6 +2,7 @@
   "llm": {
     "fill": "claude",
     "validate": "claude",
+    "extractModel": "claude-haiku-4-5-20251001",
     "adapters": {
       "claude":  { "model": "claude-opus-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
       "openai":  { "model": "gpt-4o", "apiKeyEnv": "OPENAI_API_KEY" },
