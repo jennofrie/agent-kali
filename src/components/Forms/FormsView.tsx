@@ -208,9 +208,9 @@ async function runExtract(
       sections.push(`=== ADDITIONAL CONTEXT ===\n${freeFormContext.trim()}`);
     }
 
-    // 5. Add checkbox/tick instructions
+    // 5. Add user instructions (HIGHEST PRIORITY — overrides everything)
     if (instructions && instructions.trim()) {
-      sections.push(`=== CHECKBOX AND TICK INSTRUCTIONS ===\n${instructions.trim()}\n\nIMPORTANT: Follow these instructions exactly when determining checkbox, tick, and radio button values.`);
+      sections.push(`=== USER INSTRUCTIONS (HIGHEST PRIORITY — OVERRIDE ALL OTHER DATA) ===\n${instructions.trim()}\n\nThese instructions MUST be followed exactly. They override any auto-extracted values. If an instruction says to skip a field, leave it blank. If it says to tick a checkbox, tick it. If it says do not fill a page or section, leave all fields in that area empty.`);
     }
 
     // Combine all source text
@@ -1745,16 +1745,16 @@ function AutoFillPanel({
           )}
         </div>
 
-        {/* Optional: checkbox instructions */}
+        {/* Instructions — highest priority, overrides auto-fill */}
         <div className="field-card">
           <div className="field-card-head">
-            <span className="field-card-label">Checkbox instructions</span>
-            <span className="field-card-pill high" style={{ fontSize: 9 }}>optional</span>
+            <span className="field-card-label">Instructions</span>
+            <span className="field-card-pill high" style={{ fontSize: 9 }}>highest priority</span>
           </div>
           <textarea
             className="field-input"
-            rows={3}
-            placeholder={"Example:\n\u2022 Tick Yes for consent\n\u2022 Tick Plan managed\n\u2022 Check At Home for location"}
+            rows={4}
+            placeholder={"Tell the AI exactly what to do. Examples:\n\u2022 Tick Yes for consent, tick Plan managed\n\u2022 On page 2, do not fill out anything\n\u2022 Skip the emergency contact section\n\u2022 For hourly rate use $65.47\n\u2022 Leave signature fields blank"}
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
             disabled={step === "running"}
