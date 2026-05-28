@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Icon } from "../Shared/Icon";
 import {
   MOCK_FIELDS,
@@ -9,6 +9,10 @@ import {
   type OpenDoc,
   type RealParticipant,
 } from "../../lib/mockData";
+import { sidecar } from "../../lib/ipc/sidecar";
+import { useStore } from "../../store";
+import type { FieldSchema } from "../../store";
+import { DocumentViewer } from "../DocumentViewer/DocumentViewer";
 
 // ---------------------------------------------------------------------------
 // Prop types
@@ -39,6 +43,22 @@ interface InfoPanelProps {
   doc: OpenDoc;
 }
 
+interface PipelinePanelProps {
+  doc: OpenDoc;
+  onUpdateDoc?: (id: string, updates: Partial<OpenDoc>) => void;
+  instructions: string;
+  ragQuery: string;
+}
+
+interface SourcesPanelProps {
+  doc: OpenDoc;
+  instructions: string;
+  setInstructions: (v: string) => void;
+  ragQuery: string;
+  setRagQuery: (v: string) => void;
+  onReExtract: () => void;
+}
+
 interface MaximizedDocProps {
   doc: OpenDoc;
   openDocs: OpenDoc[];
@@ -47,6 +67,7 @@ interface MaximizedDocProps {
   minimize: () => void;
   onResolveAmbiguity?: () => void;
   onUpdateDoc?: (id: string, updates: Partial<OpenDoc>) => void;
+  onAddNew: () => void;
 }
 
 interface FormsViewProps {
@@ -62,6 +83,143 @@ interface PipelineStep {
   name: string;
   sub: string;
   state: "done" | "active" | "";
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline helpers (real sidecar calls)
+// ---------------------------------------------------------------------------
+
+async function runIngest(doc: OpenDoc): Promise<{ error?: string; editability?: string; path?: string; formMap?: any }> {
+  if (!doc.filePath) return { error: "No file path" };
+  try {
+    const res = await sidecar.post<any>("/ingest", { file_path: doc.filePath });
+    if (res.data?.error) return { error: res.data.error };
+    const store = useStore.getState();
+    if (res.data?.editability) {
+      store.setEditability(res.data.editability, res.data.path ?? null);
+    }
+    if (res.data?.form_map) {
+      store.setFormMap(res.data.form_map);
+    }
+    store.setUploaded(doc.filePath);
+    return {
+      editability: res.data?.editability,
+      path: res.data?.path,
+      formMap: res.data?.form_map,
+    };
+  } catch (err) {
+    return { error: String(err) };
+  }
+}
+
+async function runSchema(doc: OpenDoc): Promise<{ error?: string; fieldCount?: number }> {
+  if (!doc.filePath) return { error: "No file path" };
+  try {
+    const res = await sidecar.post<any>("/schema", { file_path: doc.filePath });
+    if (res.data?.error) return { error: res.data.error };
+    const store = useStore.getState();
+    if (res.data?.fields) {
+      store.setFields(res.data.fields);
+    }
+    return { fieldCount: res.data?.fields?.length ?? 0 };
+  } catch (err) {
+    return { error: String(err) };
+  }
+}
+
+async function runExtract(_doc: OpenDoc, instructions: string, ragQuery: string): Promise<{ error?: string; filledCount?: number }> {
+  try {
+    let sourceText = instructions;
+    if (ragQuery && window.api?.ragQuery) {
+      try {
+        const ragResult = await window.api.ragQuery(ragQuery);
+        sourceText = ragResult + "\n\n" + instructions;
+      } catch {
+        // RAG query failed, proceed with instructions only
+      }
+    }
+    const fields = useStore.getState().fields;
+    const res = await sidecar.post<any>("/extract-values", {
+      schema: { fields },
+      source_text: sourceText,
+    });
+    if (res.data?.error) return { error: res.data.error };
+    const store = useStore.getState();
+    if (res.data?.values) {
+      const values = res.data.values as Record<string, string | boolean>;
+      for (const [id, v] of Object.entries(values)) {
+        store.setFieldValue(id, v);
+      }
+    }
+    const filledCount = res.data?.values ? Object.keys(res.data.values).length : 0;
+    return { filledCount };
+  } catch (err) {
+    return { error: String(err) };
+  }
+}
+
+async function runFill(doc: OpenDoc): Promise<{ error?: string; filledPath?: string }> {
+  if (!doc.filePath) return { error: "No file path" };
+  try {
+    const store = useStore.getState();
+    const fields = store.fields;
+    const fieldValues = store.fieldValues;
+    const tmpOut = `/tmp/agent-kali-filled-${Date.now()}.pdf`;
+    const res = await sidecar.post<any>("/fill", {
+      source_path: doc.filePath,
+      out_path: tmpOut,
+      path: "direct",
+      schema: { fields },
+      values: fieldValues,
+    });
+    if (res.data?.error) return { error: res.data.error };
+    const filledPath = res.data?.out_path || tmpOut;
+    store.setFilled(filledPath);
+    return { filledPath };
+  } catch (err) {
+    return { error: String(err) };
+  }
+}
+
+async function runExport(_doc: OpenDoc): Promise<{ error?: string; destPath?: string }> {
+  try {
+    const filled = useStore.getState().filledPath;
+    if (!filled) return { error: "No filled PDF available" };
+    if (!window.api?.saveFile) return { error: "Save dialog not available (browser mode)" };
+    const dest = await window.api.saveFile("filled.pdf");
+    if (!dest) return { error: "Export cancelled" };
+    const res = await sidecar.post<any>("/export", {
+      source_path: filled,
+      out_path: dest,
+      format: "pdf",
+      flatten: true,
+    });
+    if (res.data?.error) return { error: res.data.error };
+    return { destPath: dest };
+  } catch (err) {
+    return { error: String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File picker helper
+// ---------------------------------------------------------------------------
+
+async function pickAndOpenFile(): Promise<OpenDoc | null> {
+  if (!window.api?.openFile) return null;
+  const filePath = await window.api.openFile();
+  if (!filePath) return null;
+  const fileName = filePath.split("/").pop() || "document.pdf";
+  const newDoc: OpenDoc = {
+    id: "doc-" + Date.now(),
+    fileName,
+    participant: "",
+    pages: 0,
+    pct: 0,
+    status: "progress",
+    filePath,
+  };
+  return newDoc;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +304,7 @@ export function DocGrid({
             {docs.length} of 4 slots &middot; Click a card to expand
           </div>
         </div>
-        <button className="btn primary">
+        <button className="btn primary" onClick={onAddNew}>
           <Icon name="upload" size={14} />
           Upload PDF
         </button>
@@ -253,10 +411,88 @@ export function FakePdfPage({ doc }: FakePdfPageProps) {
 }
 
 // ---------------------------------------------------------------------------
-// FieldsPanel
+// FieldsPanel — uses real store fields when available, mock as fallback
 // ---------------------------------------------------------------------------
 
 export function FieldsPanel({ onResolveAmbiguity }: FieldsPanelProps) {
+  const { fields, fieldValues, setFieldValue } = useStore();
+
+  // Use real fields if available, otherwise show mock fields as demo
+  const hasRealFields = fields.length > 0;
+
+  if (hasRealFields) {
+    return (
+      <div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 12,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: "var(--text-faint)",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+            }}
+          >
+            {fields.length} fields detected
+          </div>
+          <button className="btn small ghost">
+            <Icon name="filter" size={12} />
+            Filter
+          </button>
+        </div>
+        {fields.map((f: FieldSchema) => {
+          const val = fieldValues[f.id];
+          const displayVal = val !== undefined ? String(val) : "";
+          const isCheckbox = f.type === "checkbox" || f.type === "radio";
+
+          return (
+            <div
+              key={f.id}
+              className="field-card"
+            >
+              <div className="field-card-head">
+                <span className="field-card-label">{f.label}</span>
+                <span className={"field-card-pill " + (displayVal ? "high" : "low")}>
+                  {f.type}
+                </span>
+              </div>
+              {isCheckbox ? (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+                  <input
+                    type="checkbox"
+                    checked={val === true || val === "true" || val === "Yes"}
+                    onChange={(e) => setFieldValue(f.id, e.target.checked)}
+                  />
+                  <span style={{ fontSize: 12.5, color: "var(--text-hi)" }}>
+                    {val === true || val === "true" || val === "Yes" ? "Checked" : "Unchecked"}
+                  </span>
+                </label>
+              ) : (
+                <input
+                  className="field-input"
+                  value={displayVal}
+                  placeholder="No value extracted"
+                  onChange={(e) => setFieldValue(f.id, e.target.value)}
+                />
+              )}
+              {f.instructions && (
+                <div className="field-source">Instructions: {f.instructions}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // Fallback: mock fields for demo/browser mode
   return (
     <div>
       <div
@@ -327,10 +563,61 @@ export function FieldsPanel({ onResolveAmbiguity }: FieldsPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// SourcesPanel
+// SourcesPanel — wired to real participants and RAG
 // ---------------------------------------------------------------------------
 
-export function SourcesPanel() {
+export function SourcesPanel({
+  doc,
+  instructions,
+  setInstructions,
+  ragQuery,
+  setRagQuery,
+  onReExtract,
+}: SourcesPanelProps) {
+  const [realParticipants, setRealParticipants] = useState<RealParticipant[]>([]);
+  const [selectedParticipant, setSelectedParticipant] = useState<string>("");
+  const [sourceFolder, setSourceFolder] = useState<string>("");
+
+  // Scan participants on mount
+  useEffect(() => {
+    if (window.api?.scanParticipants) {
+      window.api.scanParticipants().then((r) => {
+        const pList = r.participants || [];
+        setRealParticipants(pList);
+        // Auto-select if doc has a participant name
+        if (doc.participant && pList.length > 0) {
+          const match = pList.find((p) => p.name === doc.participant);
+          if (match) {
+            setSelectedParticipant(match.id);
+            setSourceFolder(match.folderPath);
+          }
+        }
+      }).catch(() => {
+        setRealParticipants([]);
+      });
+    }
+  }, []);
+
+  // Update source folder when participant changes
+  const handleParticipantChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const pid = e.target.value;
+    setSelectedParticipant(pid);
+    const p = realParticipants.find((rp) => rp.id === pid);
+    if (p) {
+      setSourceFolder(p.folderPath);
+    }
+  };
+
+  const handleBrowseFolder = async () => {
+    if (window.api?.openFolder) {
+      const folder = await window.api.openFolder();
+      if (folder) setSourceFolder(folder);
+    }
+  };
+
+  // Decide which participants to show
+  const hasRealParticipants = realParticipants.length > 0;
+
   return (
     <div>
       <div
@@ -350,11 +637,24 @@ export function SourcesPanel() {
         <div className="field-card-head">
           <span className="field-card-label">Participant</span>
         </div>
-        <select className="field-input" defaultValue="Marcus Chen">
-          {MOCK_PARTICIPANTS.map((p) => (
-            <option key={p.id}>{p.name}</option>
-          ))}
-        </select>
+        {hasRealParticipants ? (
+          <select
+            className="field-input"
+            value={selectedParticipant}
+            onChange={handleParticipantChange}
+          >
+            <option value="">-- Select participant --</option>
+            {realParticipants.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        ) : (
+          <select className="field-input" defaultValue="Marcus Chen">
+            {MOCK_PARTICIPANTS.map((p) => (
+              <option key={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
         <div className="field-source">
           Loads plan PDF, intake form, and case notes
         </div>
@@ -367,14 +667,18 @@ export function SourcesPanel() {
         <div style={{ display: "flex", gap: 6 }}>
           <input
             className="field-input"
-            defaultValue="/Documents/NDIS/Marcus_Chen/"
+            value={sourceFolder || "/Documents/NDIS/"}
+            onChange={(e) => setSourceFolder(e.target.value)}
           />
-          <button className="btn small">
+          <button className="btn small" onClick={handleBrowseFolder}>
             <Icon name="folder" size={13} />
           </button>
         </div>
         <div className="field-source">
-          12 files &middot; Auto-watched for changes
+          {hasRealParticipants && selectedParticipant
+            ? `${realParticipants.find((p) => p.id === selectedParticipant)?.fileCount ?? 0} files`
+            : "12 files"}{" "}
+          &middot; Auto-watched for changes
         </div>
       </div>
 
@@ -382,11 +686,16 @@ export function SourcesPanel() {
         <div className="field-card-head">
           <span className="field-card-label">RAG workspace</span>
         </div>
-        <select className="field-input" defaultValue="NDIS Pricing 2026">
-          <option>NDIS Pricing 2026</option>
-          <option>Internal SOPs</option>
-          <option>Provider docs</option>
-          <option>Participant workspace</option>
+        <select
+          className="field-input"
+          value={ragQuery}
+          onChange={(e) => setRagQuery(e.target.value)}
+        >
+          <option value="">None (no RAG query)</option>
+          <option value="NDIS Pricing 2026">NDIS Pricing 2026</option>
+          <option value="Internal SOPs">Internal SOPs</option>
+          <option value="Provider docs">Provider docs</option>
+          <option value="Participant workspace">Participant workspace</option>
         </select>
       </div>
 
@@ -397,14 +706,33 @@ export function SourcesPanel() {
         <textarea
           className="field-input"
           rows={4}
-          placeholder="Paste an email, meeting note, or extra context for Claude to use during extraction\u2026"
+          placeholder="Paste an email, meeting note, or extra context for Claude to use during extraction&hellip;"
           style={{ resize: "vertical" }}
         ></textarea>
+      </div>
+
+      <div className="field-card">
+        <div className="field-card-head">
+          <span className="field-card-label">Checkbox & tick instructions</span>
+          <span className="field-card-pill high">AI-assisted</span>
+        </div>
+        <textarea
+          className="field-input"
+          rows={4}
+          placeholder={`Type instructions for checkboxes and tick marks. Example:\n\u2022 Tick 'Yes' for consent\n\u2022 Tick 'Plan managed' for funding type\n\u2022 Cross 'No' for interpreter required\n\u2022 Check 'At Home' and 'Elsewhere' for session location`}
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          style={{ resize: "vertical" }}
+        />
+        <div className="field-source">
+          These instructions will be sent to the AI during field extraction to determine checkbox values
+        </div>
       </div>
 
       <button
         className="btn primary"
         style={{ width: "100%", justifyContent: "center", marginTop: 6 }}
+        onClick={onReExtract}
       >
         <Icon name="sparkles" size={14} />
         Re-extract field values
@@ -414,40 +742,143 @@ export function SourcesPanel() {
 }
 
 // ---------------------------------------------------------------------------
-// PipelinePanel
+// PipelinePanel — wired to real sidecar calls
 // ---------------------------------------------------------------------------
 
-export function PipelinePanel() {
-  const steps: PipelineStep[] = [
+export function PipelinePanel({ doc, onUpdateDoc, instructions, ragQuery }: PipelinePanelProps) {
+  const [stepStates, setStepStates] = useState<Record<number, "done" | "active" | "running" | "">>({
+    1: "",
+    2: "",
+    3: "",
+    4: "",
+    5: "",
+  });
+  const [stepSubs, setStepSubs] = useState<Record<number, string>>({
+    1: "Analyze editability",
+    2: "Extract field schema",
+    3: "Extract field values from sources",
+    4: "Write values to PDF",
+    5: "Flatten + watermark",
+  });
+  const [runningAll, setRunningAll] = useState(false);
+
+  const updateStep = (num: number, state: "done" | "active" | "running" | "", sub?: string) => {
+    setStepStates((prev) => ({ ...prev, [num]: state }));
+    if (sub) setStepSubs((prev) => ({ ...prev, [num]: sub }));
+  };
+
+  const handleRunIngest = useCallback(async () => {
+    updateStep(1, "running", "Ingesting...");
+    const result = await runIngest(doc);
+    if (result.error) {
+      updateStep(1, "", `Error: ${result.error}`);
+      return false;
+    }
+    updateStep(1, "done", `Analyzed editability \u00B7 ${result.editability ?? "AcroForm"} detected`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 10 });
+    return true;
+  }, [doc, onUpdateDoc]);
+
+  const handleRunSchema = useCallback(async () => {
+    updateStep(2, "running", "Extracting schema...");
+    const result = await runSchema(doc);
+    if (result.error) {
+      updateStep(2, "", `Error: ${result.error}`);
+      return false;
+    }
+    updateStep(2, "done", `${result.fieldCount ?? 0} fields \u00B7 Native + Vision pass`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 30 });
+    return true;
+  }, [doc, onUpdateDoc]);
+
+  const handleRunExtract = useCallback(async () => {
+    updateStep(3, "running", "Extracting values...");
+    const result = await runExtract(doc, instructions, ragQuery);
+    if (result.error) {
+      updateStep(3, "active", `Error: ${result.error}`);
+      return false;
+    }
+    const fieldCount = useStore.getState().fields.length;
+    const filledCount = result.filledCount ?? 0;
+    const flagged = fieldCount - filledCount;
+    updateStep(3, "done", `${filledCount}/${fieldCount} filled${flagged > 0 ? ` \u00B7 ${flagged} flagged for review` : ""}`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 70 });
+    return true;
+  }, [doc, instructions, ragQuery, onUpdateDoc]);
+
+  const handleRunFill = useCallback(async () => {
+    updateStep(4, "running", "Filling PDF...");
+    const result = await runFill(doc);
+    if (result.error) {
+      updateStep(4, "", `Error: ${result.error}`);
+      return false;
+    }
+    updateStep(4, "done", `Direct path (writable AcroForm)`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 90 });
+    return true;
+  }, [doc, onUpdateDoc]);
+
+  const handleRunExport = useCallback(async () => {
+    updateStep(5, "running", "Exporting...");
+    const result = await runExport(doc);
+    if (result.error) {
+      updateStep(5, "", `Error: ${result.error}`);
+      return false;
+    }
+    updateStep(5, "done", `Exported to ${result.destPath}`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 100, status: "done" });
+    return true;
+  }, [doc, onUpdateDoc]);
+
+  const handleRunFullPipeline = useCallback(async () => {
+    setRunningAll(true);
+    const ok1 = await handleRunIngest();
+    if (!ok1) { setRunningAll(false); return; }
+    const ok2 = await handleRunSchema();
+    if (!ok2) { setRunningAll(false); return; }
+    const ok3 = await handleRunExtract();
+    if (!ok3) { setRunningAll(false); return; }
+    const ok4 = await handleRunFill();
+    if (!ok4) { setRunningAll(false); return; }
+    await handleRunExport();
+    setRunningAll(false);
+  }, [handleRunIngest, handleRunSchema, handleRunExtract, handleRunFill, handleRunExport]);
+
+  const steps: (PipelineStep & { handler: () => Promise<boolean> })[] = [
     {
       num: 1,
       name: "Ingest",
-      sub: "Analyzed editability \u00B7 AcroForm detected",
-      state: "done",
+      sub: stepSubs[1],
+      state: stepStates[1] === "running" ? "active" : stepStates[1] as "done" | "active" | "",
+      handler: handleRunIngest,
     },
     {
       num: 2,
       name: "Schema extraction",
-      sub: "12 fields \u00B7 Native + Vision pass",
-      state: "done",
+      sub: stepSubs[2],
+      state: stepStates[2] === "running" ? "active" : stepStates[2] as "done" | "active" | "",
+      handler: handleRunSchema,
     },
     {
       num: 3,
       name: "Value extraction",
-      sub: "10/12 filled \u00B7 2 flagged for review",
-      state: "active",
+      sub: stepSubs[3],
+      state: stepStates[3] === "running" ? "active" : stepStates[3] as "done" | "active" | "",
+      handler: handleRunExtract,
     },
     {
       num: 4,
       name: "Fill PDF",
-      sub: "Direct path (writable AcroForm)",
-      state: "",
+      sub: stepSubs[4],
+      state: stepStates[4] === "running" ? "active" : stepStates[4] as "done" | "active" | "",
+      handler: handleRunFill,
     },
     {
       num: 5,
       name: "Export",
-      sub: "Flatten + watermark",
-      state: "",
+      sub: stepSubs[5],
+      state: stepStates[5] === "running" ? "active" : stepStates[5] as "done" | "active" | "",
+      handler: handleRunExport,
     },
   ];
 
@@ -475,10 +906,14 @@ export function PipelinePanel() {
             <div className="pipe-sub">{s.sub}</div>
           </div>
           <div className="pipe-cta">
-            {s.state === "active" ? (
-              <button className="btn small primary">Resume</button>
+            {stepStates[s.num] === "running" ? (
+              <button className="btn small" disabled>
+                <Icon name="loader" size={12} />
+              </button>
+            ) : s.state === "active" ? (
+              <button className="btn small primary" onClick={() => s.handler()}>Resume</button>
             ) : s.state === "" ? (
-              <button className="btn small">Run</button>
+              <button className="btn small" onClick={() => s.handler()}>Run</button>
             ) : (
               <Icon
                 name="check"
@@ -492,9 +927,11 @@ export function PipelinePanel() {
       <button
         className="btn primary"
         style={{ width: "100%", justifyContent: "center", marginTop: 16 }}
+        onClick={handleRunFullPipeline}
+        disabled={runningAll}
       >
         <Icon name="zap" size={14} />
-        Run full pipeline
+        {runningAll ? "Running pipeline..." : "Run full pipeline"}
       </button>
     </div>
   );
@@ -505,15 +942,17 @@ export function PipelinePanel() {
 // ---------------------------------------------------------------------------
 
 export function InfoPanel({ doc }: InfoPanelProps) {
+  const { editability, path: fillPath, filledPath } = useStore();
+
   const rows: [string, string][] = [
     ["Filename", doc.fileName],
-    ["Participant", doc.participant],
+    ["Participant", doc.participant || "\u2014"],
     ["Pages", String(doc.pages)],
-    ["Editability", "Editable AcroForm"],
-    ["Fill path", "Direct write"],
+    ["Editability", editability ? String(editability) : "Editable AcroForm"],
+    ["Fill path", fillPath ? String(fillPath) : "Direct write"],
     ["Replica path", "\u2014"],
-    ["Created", "May 28, 2026 \u00B7 14:22"],
-    ["Last filled", "May 28, 2026 \u00B7 14:24"],
+    ["File path", doc.filePath || "\u2014"],
+    ["Filled path", filledPath || "\u2014"],
     ["Sidecar", "/sidecar :8801 \u00B7 OK"],
   ];
 
@@ -548,7 +987,13 @@ export function InfoPanel({ doc }: InfoPanelProps) {
               color: "var(--text-hi)",
               fontWeight: 500,
               fontFamily:
-                k === "Filename" ? "var(--font-mono)" : "inherit",
+                k === "Filename" || k === "File path" || k === "Filled path"
+                  ? "var(--font-mono)"
+                  : "inherit",
+              maxWidth: 200,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             {v}
@@ -991,8 +1436,28 @@ export function MaximizedDoc({
   minimize,
   onResolveAmbiguity,
   onUpdateDoc,
+  onAddNew,
 }: MaximizedDocProps) {
   const [subtab, setSubtab] = useState<string>("fields");
+  const [instructions, setInstructions] = useState<string>("");
+  const [ragQuery, setRagQuery] = useState<string>("");
+
+  // When switching to a doc with a filePath, set the store's uploadedPath
+  // so the real DocumentViewer loads the correct file
+  const { setUploaded } = useStore();
+  useEffect(() => {
+    if (doc.filePath) {
+      setUploaded(doc.filePath);
+    }
+  }, [doc.id, doc.filePath, setUploaded]);
+
+  const handleReExtract = useCallback(async () => {
+    await runExtract(doc, instructions, ragQuery);
+  }, [doc, instructions, ragQuery]);
+
+  const handleExport = useCallback(async () => {
+    await runExport(doc);
+  }, [doc]);
 
   return (
     <div className="docworkspace">
@@ -1016,7 +1481,7 @@ export function MaximizedDoc({
             </span>
           </div>
         ))}
-        <div className="doctab-add">
+        <div className="doctab-add" onClick={onAddNew}>
           <Icon name="plus" size={13} />
           New
         </div>
@@ -1048,17 +1513,21 @@ export function MaximizedDoc({
                 if (onUpdateDoc) {
                   // Extract just the filename from the new path
                   const newFileName = newPath.split("/").pop() || doc.fileName;
-                  onUpdateDoc(doc.id, { fileName: newFileName });
+                  onUpdateDoc(doc.id, { fileName: newFileName, filePath: newPath });
                 }
               }}
             />
-            <button className="btn small ghost">
+            <button className="btn small ghost" onClick={handleExport}>
               <Icon name="download" size={13} />
               Export
             </button>
           </div>
           <div className="pdf-canvas">
-            <FakePdfPage doc={doc} />
+            {doc.filePath ? (
+              <DocumentViewer />
+            ) : (
+              <FakePdfPage doc={doc} />
+            )}
           </div>
         </div>
 
@@ -1080,8 +1549,24 @@ export function MaximizedDoc({
             {subtab === "fields" && (
               <FieldsPanel onResolveAmbiguity={onResolveAmbiguity} />
             )}
-            {subtab === "sources" && <SourcesPanel />}
-            {subtab === "pipeline" && <PipelinePanel />}
+            {subtab === "sources" && (
+              <SourcesPanel
+                doc={doc}
+                instructions={instructions}
+                setInstructions={setInstructions}
+                ragQuery={ragQuery}
+                setRagQuery={setRagQuery}
+                onReExtract={handleReExtract}
+              />
+            )}
+            {subtab === "pipeline" && (
+              <PipelinePanel
+                doc={doc}
+                onUpdateDoc={onUpdateDoc}
+                instructions={instructions}
+                ragQuery={ragQuery}
+              />
+            )}
             {subtab === "info" && <InfoPanel doc={doc} />}
           </div>
         </div>
@@ -1095,7 +1580,11 @@ export function MaximizedDoc({
 // ---------------------------------------------------------------------------
 
 export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
-  const [openDocs, setOpenDocs] = useState<OpenDoc[]>(MOCK_OPEN_DOCS);
+  // Start empty in Electron mode; use mock data in browser mode as demo
+  const hasElectronApi = typeof window !== "undefined" && window.api != null && typeof window.api.openFile === "function";
+  const [openDocs, setOpenDocs] = useState<OpenDoc[]>(
+    hasElectronApi ? [] : MOCK_OPEN_DOCS
+  );
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
 
   const activeDoc = openDocs.find((d) => d.id === activeDocId);
@@ -1108,20 +1597,31 @@ export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
     }
   };
 
-  const addNew = () => {
+  const handleOpenFile = useCallback(async () => {
     if (openDocs.length >= 4) return;
-    const id = "doc" + Date.now();
-    const newDoc: OpenDoc = {
-      id,
-      fileName: "Untitled.pdf",
-      participant: "\u2014",
-      pages: 1,
-      pct: 0,
-      status: "progress",
-    };
-    setOpenDocs([...openDocs, newDoc]);
-    setActiveDocId(id);
-  };
+
+    if (hasElectronApi) {
+      const newDoc = await pickAndOpenFile();
+      if (!newDoc) return;
+      setOpenDocs((prev) => [...prev.slice(0, 3), newDoc]); // max 4
+      setActiveDocId(newDoc.id);
+      // Set uploaded path in store so DocumentViewer can pick it up
+      useStore.getState().setUploaded(newDoc.filePath!);
+    } else {
+      // Browser fallback: create an untitled doc
+      const id = "doc" + Date.now();
+      const newDoc: OpenDoc = {
+        id,
+        fileName: "Untitled.pdf",
+        participant: "\u2014",
+        pages: 1,
+        pct: 0,
+        status: "progress",
+      };
+      setOpenDocs([...openDocs, newDoc]);
+      setActiveDocId(id);
+    }
+  }, [openDocs]);
 
   const updateDoc = (id: string, updates: Partial<OpenDoc>) => {
     setOpenDocs((prev) =>
@@ -1139,6 +1639,7 @@ export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
         minimize={() => setActiveDocId(null)}
         onResolveAmbiguity={onResolveAmbiguity}
         onUpdateDoc={updateDoc}
+        onAddNew={handleOpenFile}
       />
     );
   }
@@ -1148,7 +1649,7 @@ export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
       docs={openDocs}
       setActiveDocId={setActiveDocId}
       closeDoc={closeDoc}
-      onAddNew={addNew}
+      onAddNew={handleOpenFile}
     />
   );
 }

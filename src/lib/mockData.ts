@@ -91,6 +91,7 @@ export interface OpenDoc {
   pages: number;
   pct: number;
   status: "done" | "progress";
+  filePath?: string;
 }
 
 // ---------------------------------------------------------------------------
