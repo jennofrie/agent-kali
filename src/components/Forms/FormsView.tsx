@@ -48,6 +48,9 @@ interface PipelinePanelProps {
   onUpdateDoc?: (id: string, updates: Partial<OpenDoc>) => void;
   instructions: string;
   ragQuery: string;
+  participantName: string;
+  sourceFolder: string;
+  freeFormContext: string;
 }
 
 interface SourcesPanelProps {
@@ -56,6 +59,10 @@ interface SourcesPanelProps {
   setInstructions: (v: string) => void;
   ragQuery: string;
   setRagQuery: (v: string) => void;
+  freeFormContext: string;
+  setFreeFormContext: (v: string) => void;
+  onParticipantChange: (name: string, folder: string) => void;
+  extractStatus: string;
   onReExtract: () => void;
 }
 
@@ -127,32 +134,117 @@ async function runSchema(doc: OpenDoc): Promise<{ error?: string; fieldCount?: n
   }
 }
 
-async function runExtract(_doc: OpenDoc, instructions: string, ragQuery: string): Promise<{ error?: string; filledCount?: number }> {
+async function runExtract(
+  _doc: OpenDoc,
+  instructions: string,
+  ragQuery: string,
+  participantName?: string,
+  sourceFolder?: string,
+  freeFormContext?: string,
+): Promise<{ error?: string; filledCount?: number; sourceSummary?: string }> {
   try {
-    let sourceText = instructions;
-    if (ragQuery && window.api?.ragQuery) {
+    const sections: string[] = [];
+
+    // 1. Query RAG for participant details (automatic if participant selected)
+    if (participantName && window.api?.ragQuery) {
       try {
-        const ragResult = await window.api.ragQuery(ragQuery);
-        sourceText = ragResult + "\n\n" + instructions;
+        const ragResult = await window.api.ragQuery(
+          `${participantName} date of birth address phone email NDIS number diagnosis plan details personal information`
+        );
+        if (ragResult && ragResult.length > 10) {
+          sections.push(`=== PARTICIPANT DATA (from RAG) ===\n${ragResult}`);
+        }
       } catch {
-        // RAG query failed, proceed with instructions only
+        // RAG unavailable, continue
       }
     }
+
+    // 2. Read files from participant's SC folder via sidecar
+    if (sourceFolder) {
+      try {
+        const folderRes = await sidecar.post<any>("/extract-from-folder", {
+          folder_path: sourceFolder,
+          schema: { fields: useStore.getState().fields },
+        });
+        if (folderRes.ok && folderRes.data?.values) {
+          // Apply folder-extracted values directly
+          const store = useStore.getState();
+          const values = folderRes.data.values as Record<string, { value: unknown; confidence: number }>;
+          let folderFilled = 0;
+          for (const [id, payload] of Object.entries(values)) {
+            if (payload && payload.value !== null && payload.value !== undefined && payload.value !== "") {
+              store.setFieldValue(id, payload.value as string | boolean);
+              folderFilled++;
+            }
+          }
+          const filesRead = folderRes.data.files_read?.length ?? 0;
+          sections.push(`=== FOLDER DATA (${filesRead} files read, ${folderFilled} fields extracted) ===`);
+        }
+      } catch {
+        // Folder extraction failed, continue with other sources
+      }
+    }
+
+    // 3. Query additional RAG workspace if specified
+    if (ragQuery && ragQuery !== "" && window.api?.ragQuery) {
+      try {
+        const queryText = participantName
+          ? `${participantName} ${ragQuery}`
+          : ragQuery;
+        const ragResult = await window.api.ragQuery(queryText);
+        if (ragResult && ragResult.length > 10) {
+          sections.push(`=== RAG WORKSPACE DATA ===\n${ragResult}`);
+        }
+      } catch {
+        // RAG query failed
+      }
+    }
+
+    // 4. Add free-form context
+    if (freeFormContext && freeFormContext.trim()) {
+      sections.push(`=== ADDITIONAL CONTEXT ===\n${freeFormContext.trim()}`);
+    }
+
+    // 5. Add checkbox/tick instructions
+    if (instructions && instructions.trim()) {
+      sections.push(`=== CHECKBOX AND TICK INSTRUCTIONS ===\n${instructions.trim()}\n\nIMPORTANT: Follow these instructions exactly when determining checkbox, tick, and radio button values.`);
+    }
+
+    // Combine all source text
+    const sourceText = sections.join("\n\n");
+
+    if (!sourceText.trim()) {
+      return { error: "No data sources configured. Select a participant, enter a RAG query, or provide context." };
+    }
+
+    // 6. Send combined source text to sidecar for field extraction
     const fields = useStore.getState().fields;
     const res = await sidecar.post<any>("/extract-values", {
       schema: { fields },
       source_text: sourceText,
     });
     if (res.data?.error) return { error: res.data.error };
+
     const store = useStore.getState();
+    let filledCount = 0;
     if (res.data?.values) {
-      const values = res.data.values as Record<string, string | boolean>;
-      for (const [id, v] of Object.entries(values)) {
-        store.setFieldValue(id, v);
+      const values = res.data.values as Record<string, { value: unknown; confidence: number } | string | boolean>;
+      for (const [id, payload] of Object.entries(values)) {
+        if (payload && typeof payload === "object" && "value" in payload) {
+          const p = payload as { value: unknown; confidence: number };
+          if (p.value !== null && p.value !== undefined && p.value !== "") {
+            store.setFieldValue(id, p.value as string | boolean);
+            filledCount++;
+          }
+        } else if (payload !== null && payload !== undefined && payload !== "") {
+          store.setFieldValue(id, payload as string | boolean);
+          filledCount++;
+        }
       }
     }
-    const filledCount = res.data?.values ? Object.keys(res.data.values).length : 0;
-    return { filledCount };
+
+    const summary = sections.map(s => s.split("\n")[0]).join("; ");
+    return { filledCount, sourceSummary: summary };
   } catch (err) {
     return { error: String(err) };
   }
@@ -572,6 +664,10 @@ export function SourcesPanel({
   setInstructions,
   ragQuery,
   setRagQuery,
+  freeFormContext,
+  setFreeFormContext,
+  onParticipantChange,
+  extractStatus,
   onReExtract,
 }: SourcesPanelProps) {
   const [realParticipants, setRealParticipants] = useState<RealParticipant[]>([]);
@@ -605,6 +701,7 @@ export function SourcesPanel({
     const p = realParticipants.find((rp) => rp.id === pid);
     if (p) {
       setSourceFolder(p.folderPath);
+      onParticipantChange(p.name, p.folderPath);
     }
   };
 
@@ -706,9 +803,11 @@ export function SourcesPanel({
         <textarea
           className="field-input"
           rows={4}
-          placeholder="Paste an email, meeting note, or extra context for Claude to use during extraction&hellip;"
+          placeholder="Paste an email, meeting note, or extra context to use during extraction&hellip;"
+          value={freeFormContext}
+          onChange={(e) => setFreeFormContext(e.target.value)}
           style={{ resize: "vertical" }}
-        ></textarea>
+        />
       </div>
 
       <div className="field-card">
@@ -729,13 +828,28 @@ export function SourcesPanel({
         </div>
       </div>
 
+      {extractStatus && (
+        <div style={{
+          padding: "10px 12px",
+          borderRadius: 8,
+          background: extractStatus.startsWith("Error")
+            ? "rgba(251,81,104,0.12)" : "rgba(138,100,255,0.12)",
+          color: extractStatus.startsWith("Error")
+            ? "var(--danger)" : "var(--accent-soft)",
+          fontSize: 12,
+          fontWeight: 600,
+          marginTop: 8,
+          lineHeight: 1.4,
+        }}>{extractStatus}</div>
+      )}
+
       <button
         className="btn primary"
         style={{ width: "100%", justifyContent: "center", marginTop: 6 }}
         onClick={onReExtract}
       >
         <Icon name="sparkles" size={14} />
-        Re-extract field values
+        Extract from all sources
       </button>
     </div>
   );
@@ -745,7 +859,7 @@ export function SourcesPanel({
 // PipelinePanel — wired to real sidecar calls
 // ---------------------------------------------------------------------------
 
-export function PipelinePanel({ doc, onUpdateDoc, instructions, ragQuery }: PipelinePanelProps) {
+export function PipelinePanel({ doc, onUpdateDoc, instructions, ragQuery, participantName, sourceFolder, freeFormContext }: PipelinePanelProps) {
   const [stepStates, setStepStates] = useState<Record<number, "done" | "active" | "running" | "">>({
     1: "",
     2: "",
@@ -792,8 +906,8 @@ export function PipelinePanel({ doc, onUpdateDoc, instructions, ragQuery }: Pipe
   }, [doc, onUpdateDoc]);
 
   const handleRunExtract = useCallback(async () => {
-    updateStep(3, "running", "Extracting values...");
-    const result = await runExtract(doc, instructions, ragQuery);
+    updateStep(3, "running", "Gathering data from all sources...");
+    const result = await runExtract(doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext);
     if (result.error) {
       updateStep(3, "active", `Error: ${result.error}`);
       return false;
@@ -804,7 +918,7 @@ export function PipelinePanel({ doc, onUpdateDoc, instructions, ragQuery }: Pipe
     updateStep(3, "done", `${filledCount}/${fieldCount} filled${flagged > 0 ? ` \u00B7 ${flagged} flagged for review` : ""}`);
     if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 70 });
     return true;
-  }, [doc, instructions, ragQuery, onUpdateDoc]);
+  }, [doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext, onUpdateDoc]);
 
   const handleRunFill = useCallback(async () => {
     updateStep(4, "running", "Filling PDF...");
@@ -1441,6 +1555,10 @@ export function MaximizedDoc({
   const [subtab, setSubtab] = useState<string>("fields");
   const [instructions, setInstructions] = useState<string>("");
   const [ragQuery, setRagQuery] = useState<string>("");
+  const [participantName, setParticipantName] = useState<string>(doc.participant || "");
+  const [sourceFolder, setSourceFolder] = useState<string>("");
+  const [freeFormContext, setFreeFormContext] = useState<string>("");
+  const [extractStatus, setExtractStatus] = useState<string>("");
 
   // When switching to a doc with a filePath, set the store's uploadedPath
   // so the real DocumentViewer loads the correct file
@@ -1452,8 +1570,15 @@ export function MaximizedDoc({
   }, [doc.id, doc.filePath, setUploaded]);
 
   const handleReExtract = useCallback(async () => {
-    await runExtract(doc, instructions, ragQuery);
-  }, [doc, instructions, ragQuery]);
+    setExtractStatus("Gathering data from all sources...");
+    const result = await runExtract(doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext);
+    if (result.error) {
+      setExtractStatus("Error: " + result.error);
+    } else {
+      setExtractStatus(`Filled ${result.filledCount} fields from: ${result.sourceSummary || "sources"}`);
+    }
+    setTimeout(() => setExtractStatus(""), 8000);
+  }, [doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext]);
 
   const handleExport = useCallback(async () => {
     await runExport(doc);
@@ -1556,6 +1681,13 @@ export function MaximizedDoc({
                 setInstructions={setInstructions}
                 ragQuery={ragQuery}
                 setRagQuery={setRagQuery}
+                freeFormContext={freeFormContext}
+                setFreeFormContext={setFreeFormContext}
+                onParticipantChange={(name, folder) => {
+                  setParticipantName(name);
+                  setSourceFolder(folder);
+                }}
+                extractStatus={extractStatus}
                 onReExtract={handleReExtract}
               />
             )}
@@ -1565,6 +1697,9 @@ export function MaximizedDoc({
                 onUpdateDoc={onUpdateDoc}
                 instructions={instructions}
                 ragQuery={ragQuery}
+                participantName={participantName}
+                sourceFolder={sourceFolder}
+                freeFormContext={freeFormContext}
               />
             )}
             {subtab === "info" && <InfoPanel doc={doc} />}
