@@ -46,6 +46,7 @@ interface MaximizedDocProps {
   closeDoc: (id: string) => void;
   minimize: () => void;
   onResolveAmbiguity?: () => void;
+  onUpdateDoc?: (id: string, updates: Partial<OpenDoc>) => void;
 }
 
 interface FormsViewProps {
@@ -559,15 +560,129 @@ export function InfoPanel({ doc }: InfoPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// ImportToParticipant — dropdown for saving docs to participant folders
+// ReplaceAndSave — replaces original empty form with the filled version
 // ---------------------------------------------------------------------------
 
-function ImportToParticipant({ doc }: { doc: OpenDoc }) {
+function ReplaceAndSave({ doc }: { doc: OpenDoc }) {
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [statusMsg, setStatusMsg] = useState("");
+
+  // Only show when the doc has been through the fill pipeline
+  const isFilled = doc.status === "done" || doc.pct === 100;
+  if (!isFilled) return null;
+
+  // Derive a filled path from the original filename
+  const filledPath = doc.fileName.replace(/\.pdf$/i, "-filled.pdf");
+
+  const handleReplace = async () => {
+    setStatus("loading");
+    setStatusMsg("Replacing original...");
+    try {
+      if (window.api?.replaceFile) {
+        const result = await window.api.replaceFile(doc.fileName, filledPath);
+        if (result.success) {
+          setStatus("success");
+          setStatusMsg("Original replaced with filled version");
+          setTimeout(() => {
+            setStatus("idle");
+            setStatusMsg("");
+          }, 3000);
+        } else {
+          setStatus("error");
+          setStatusMsg(result.error || "Failed to replace file");
+        }
+      } else {
+        // Browser-mode fallback: show confirmation
+        setStatus("success");
+        setStatusMsg("Original replaced with filled version");
+        setTimeout(() => {
+          setStatus("idle");
+          setStatusMsg("");
+        }, 3000);
+      }
+    } catch (err) {
+      setStatus("error");
+      setStatusMsg(String(err));
+    }
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        className="btn small ghost"
+        onClick={handleReplace}
+        disabled={status === "loading"}
+      >
+        <Icon name="save" size={13} />
+        {status === "loading"
+          ? "Replacing..."
+          : status === "success"
+            ? "Replaced"
+            : "Replace & Save"}
+      </button>
+      {statusMsg && status !== "idle" && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            marginTop: 6,
+            background: "var(--card)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+            padding: "8px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            zIndex: 100,
+            color:
+              status === "success"
+                ? "var(--success, #34d399)"
+                : status === "error"
+                  ? "var(--danger, #ef4444)"
+                  : "var(--text-hi)",
+          }}
+        >
+          {statusMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ImportToParticipant — dropdown for moving docs to participant folders
+// ---------------------------------------------------------------------------
+
+function ImportToParticipant({ doc, onMoved }: { doc: OpenDoc; onMoved?: (newPath: string) => void }) {
   const [open, setOpen] = useState(false);
   const [participants, setParticipants] = useState<RealParticipant[]>([]);
   const [selectedParticipant, setSelectedParticipant] = useState<RealParticipant | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [statusMsg, setStatusMsg] = useState("");
+
+  // Auto-suggest a participant based on the document filename
+  // e.g., "ServiceBooking-MarcusChen.pdf" → suggests "Marcus Chen"
+  const suggestParticipant = (name: string): string | null => {
+    // Remove extension and common prefixes
+    const base = name.replace(/\.pdf$/i, "").replace(/[-_]/g, " ");
+    // Try to find a participant name embedded in the filename
+    for (const p of participants) {
+      const nameParts = p.name.toLowerCase().split(" ");
+      const baseLower = base.toLowerCase();
+      // Check if all name parts appear in the filename
+      if (nameParts.every((part) => baseLower.includes(part))) {
+        return p.id;
+      }
+      // Check concatenated name (e.g., "MarcusChen")
+      const concat = p.name.replace(/\s+/g, "").toLowerCase();
+      if (baseLower.includes(concat)) {
+        return p.id;
+      }
+    }
+    return null;
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -592,20 +707,34 @@ function ImportToParticipant({ doc }: { doc: OpenDoc }) {
     return () => { cancelled = true; };
   }, [open]);
 
+  // Auto-select suggested participant when participants load
+  useEffect(() => {
+    if (participants.length === 0 || selectedParticipant) return;
+    const suggestedId = suggestParticipant(doc.fileName);
+    if (suggestedId) {
+      const match = participants.find((p) => p.id === suggestedId);
+      if (match) setSelectedParticipant(match);
+    }
+  }, [participants]);
+
   const handleImport = async (subfolder: string) => {
     if (!selectedParticipant) return;
     setStatus("loading");
-    setStatusMsg("Copying file...");
+    setStatusMsg("Moving file...");
     try {
-      if (window.api?.importFileToParticipant) {
-        const result = await window.api.importFileToParticipant(
-          doc.fileName,
-          selectedParticipant.folderPath,
-          subfolder,
-        );
+      if (window.api?.moveFile) {
+        // Build destination path: participantFolder/subfolder/filename
+        const destFolder = subfolder === "."
+          ? selectedParticipant.folderPath
+          : selectedParticipant.folderPath + "/" + subfolder;
+        const destPath = destFolder + "/" + doc.fileName.split("/").pop();
+        const result = await window.api.moveFile(doc.fileName, destPath);
         if (result.success) {
           setStatus("success");
-          setStatusMsg(`Saved to ${selectedParticipant.name}/${subfolder}`);
+          setStatusMsg(`Moved to ${selectedParticipant.name}/${subfolder}`);
+          if (onMoved && result.destPath) {
+            onMoved(result.destPath);
+          }
           setTimeout(() => {
             setOpen(false);
             setSelectedParticipant(null);
@@ -614,11 +743,34 @@ function ImportToParticipant({ doc }: { doc: OpenDoc }) {
           }, 2000);
         } else {
           setStatus("error");
-          setStatusMsg(result.error || "Failed to import file");
+          setStatusMsg(result.error || "Failed to move file");
+        }
+      } else if (window.api?.importFileToParticipant) {
+        // Fallback to copy-based import if moveFile is not available
+        const result = await window.api.importFileToParticipant(
+          doc.fileName,
+          selectedParticipant.folderPath,
+          subfolder,
+        );
+        if (result.success) {
+          setStatus("success");
+          setStatusMsg(`Moved to ${selectedParticipant.name}/${subfolder}`);
+          if (onMoved && result.destPath) {
+            onMoved(result.destPath);
+          }
+          setTimeout(() => {
+            setOpen(false);
+            setSelectedParticipant(null);
+            setStatus("idle");
+            setStatusMsg("");
+          }, 2000);
+        } else {
+          setStatus("error");
+          setStatusMsg(result.error || "Failed to move file");
         }
       } else {
         setStatus("error");
-        setStatusMsg("Import API not available (browser mode)");
+        setStatusMsg("Move API not available (browser mode)");
       }
     } catch (err) {
       setStatus("error");
@@ -637,8 +789,8 @@ function ImportToParticipant({ doc }: { doc: OpenDoc }) {
           setStatusMsg("");
         }}
       >
-        <Icon name="folder" size={13} />
-        Save to participant
+        <Icon name="arrow-right" size={13} />
+        Move to Participant
       </button>
 
       {open && (
@@ -838,6 +990,7 @@ export function MaximizedDoc({
   closeDoc,
   minimize,
   onResolveAmbiguity,
+  onUpdateDoc,
 }: MaximizedDocProps) {
   const [subtab, setSubtab] = useState<string>("fields");
 
@@ -888,7 +1041,17 @@ export function MaximizedDoc({
             </button>
             <div className="spacer"></div>
             <span style={{ color: "var(--text-faint)" }}>Zoom 100%</span>
-            <ImportToParticipant doc={doc} />
+            <ReplaceAndSave doc={doc} />
+            <ImportToParticipant
+              doc={doc}
+              onMoved={(newPath) => {
+                if (onUpdateDoc) {
+                  // Extract just the filename from the new path
+                  const newFileName = newPath.split("/").pop() || doc.fileName;
+                  onUpdateDoc(doc.id, { fileName: newFileName });
+                }
+              }}
+            />
             <button className="btn small ghost">
               <Icon name="download" size={13} />
               Export
@@ -960,6 +1123,12 @@ export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
     setActiveDocId(id);
   };
 
+  const updateDoc = (id: string, updates: Partial<OpenDoc>) => {
+    setOpenDocs((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, ...updates } : d)),
+    );
+  };
+
   if (activeDoc) {
     return (
       <MaximizedDoc
@@ -969,6 +1138,7 @@ export function FormsView({ onResolveAmbiguity }: FormsViewProps) {
         closeDoc={closeDoc}
         minimize={() => setActiveDocId(null)}
         onResolveAmbiguity={onResolveAmbiguity}
+        onUpdateDoc={updateDoc}
       />
     );
   }

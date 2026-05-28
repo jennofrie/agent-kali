@@ -25,6 +25,24 @@ declare global {
         destPath?: string;
         error?: string;
       }>;
+      deleteFile: (filePath: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+      listSubdirs: (folderPath: string) => Promise<{
+        dirs: string[];
+        error?: string;
+      }>;
+      replaceFile: (sourcePath: string, filledPath: string) => Promise<{
+        success: boolean;
+        backupPath?: string;
+        error?: string;
+      }>;
+      moveFile: (sourcePath: string, destPath: string) => Promise<{
+        success: boolean;
+        destPath?: string;
+        error?: string;
+      }>;
     };
   }
 }

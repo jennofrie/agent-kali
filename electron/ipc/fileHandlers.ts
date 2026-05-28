@@ -1,5 +1,6 @@
 import { dialog, ipcMain, BrowserWindow } from "electron";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, copyFileSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
+import path from "node:path";
 
 export function registerFileIPC() {
   ipcMain.handle("file:read", (_evt, filePath: string): number[] => {
@@ -39,5 +40,49 @@ export function registerFileIPC() {
       ? await dialog.showSaveDialog(win, opts)
       : await dialog.showSaveDialog(opts);
     return result.canceled ? null : result.filePath ?? null;
+  });
+
+  ipcMain.handle('replace-file', async (_event, sourcePath: string, filledPath: string) => {
+    try {
+      // Backup original first
+      const backupPath = sourcePath + '.bak';
+      if (existsSync(sourcePath)) {
+        copyFileSync(sourcePath, backupPath);
+      }
+      // Copy filled version over original
+      copyFileSync(filledPath, sourcePath);
+      return { success: true, backupPath };
+    } catch (e) {
+      return { success: false, error: String(e) };
+    }
+  });
+
+  ipcMain.handle('delete-file', async (_event, filePath: string) => {
+    try {
+      unlinkSync(filePath);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: String(e) };
+    }
+  });
+
+  ipcMain.handle('move-file', async (_event, sourcePath: string, destPath: string) => {
+    try {
+      const destDir = path.dirname(destPath);
+      if (!existsSync(destDir)) {
+        mkdirSync(destDir, { recursive: true });
+      }
+      renameSync(sourcePath, destPath);
+      return { success: true, destPath };
+    } catch (e) {
+      // If rename fails (cross-device), fallback to copy+delete
+      try {
+        copyFileSync(sourcePath, destPath);
+        unlinkSync(sourcePath);
+        return { success: true, destPath };
+      } catch (e2) {
+        return { success: false, error: String(e2) };
+      }
+    }
   });
 }

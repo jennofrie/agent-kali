@@ -118,6 +118,10 @@ export function Icon({ name, size = 18, className = "", style = {} }: IconProps)
       return <svg {...props}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5V21h16"/></svg>;
     case "scale":
       return <svg {...props}><path d="M12 3v18M3 7h18"/><path d="m7 7-4 7a4 4 0 0 0 8 0z"/><path d="m17 7-4 7a4 4 0 0 0 8 0z"/></svg>;
+    case "save":
+      return <svg {...props}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>;
+    case "arrow-right":
+      return <svg {...props}><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>;
     default:
       return <svg {...props}><circle cx="12" cy="12" r="9"/></svg>;
   }

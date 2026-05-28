@@ -15,11 +15,11 @@ const NAV_MAIN: NavItemData[] = [
   { id: "dashboard", label: "Dashboard", icon: "home" },
   { id: "forms", label: "Forms", icon: "forms", badge: 3 },
   { id: "participants", label: "Participants", icon: "users" },
-  { id: "drafts", label: "Drafts", icon: "draft" },
+  { id: "drafts", label: "Prompts", icon: "draft" },
 ];
 
 const NAV_TOOLS: NavItemData[] = [
-  { id: "rag", label: "RAG Search", icon: "rag" },
+  { id: "rag", label: "Research", icon: "search" },
   { id: "templates", label: "Templates", icon: "template" },
   { id: "reports", label: "Reports", icon: "report" },
   { id: "providers", label: "Providers", icon: "provider" },

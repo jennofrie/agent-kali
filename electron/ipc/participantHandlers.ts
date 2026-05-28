@@ -119,6 +119,19 @@ export function registerParticipantIPC() {
     }
   });
 
+  // List subdirectories (for recursive folder scanning)
+  ipcMain.handle('participants:listSubdirs', async (_event, folderPath: string) => {
+    try {
+      const entries = fs.readdirSync(folderPath, { withFileTypes: true });
+      const dirs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .map(e => e.name);
+      return { dirs };
+    } catch (e) {
+      return { dirs: [], error: String(e) };
+    }
+  });
+
   // Copy a file into a participant's folder
   ipcMain.handle('participants:importFile', async (_event, sourcePath: string, participantFolder: string, subfolder: string) => {
     try {

@@ -15,4 +15,10 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.invoke("participants:listFiles", folderPath, subfolder),
   importFileToParticipant: (sourcePath: string, participantFolder: string, subfolder: string) =>
     ipcRenderer.invoke("participants:importFile", sourcePath, participantFolder, subfolder),
+  deleteFile: (filePath: string) => ipcRenderer.invoke("delete-file", filePath),
+  listSubdirs: (folderPath: string) => ipcRenderer.invoke("participants:listSubdirs", folderPath),
+  replaceFile: (sourcePath: string, filledPath: string) =>
+    ipcRenderer.invoke("replace-file", sourcePath, filledPath),
+  moveFile: (sourcePath: string, destPath: string) =>
+    ipcRenderer.invoke("move-file", sourcePath, destPath),
 });
