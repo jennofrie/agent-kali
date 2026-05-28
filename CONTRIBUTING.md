@@ -1,20 +1,18 @@
 # Contributing to Agent Kali
 
-Thank you for your interest in contributing to Agent Kali. This document provides guidelines and instructions for contributing to the project.
-
 Agent Kali is maintained by **JD Space Digital Systems**.
 
 ## Code of Conduct
 
-All contributors are expected to conduct themselves professionally. Be respectful, constructive, and collaborative in all interactions.
+All contributors are expected to conduct themselves professionally. Be respectful, constructive, and collaborative.
 
 ## Getting Started
 
 ### Prerequisites
 
+- **macOS** 12+ (Electron desktop target)
 - **Node.js** 18+ and npm
 - **Python** 3.10+
-- **macOS** (Electron desktop target)
 - **Git**
 
 ### Setting Up the Development Environment
@@ -43,6 +41,37 @@ All contributors are expected to conduct themselves professionally. Be respectfu
    npm run dev
    ```
 
+   This starts Electron, Vite, and the Python sidecar together.
+
+## Project Structure
+
+```
+agent-kali/
+├── electron/              # Main process (window, IPC, sidecar)
+│   ├── main.ts
+│   ├── preload.ts
+│   ├── sidecar.ts
+│   └── ipc/               # Handler modules
+│       ├── fileHandlers.ts
+│       ├── participantHandlers.ts
+│       ├── ragHandlers.ts
+│       └── sidecarProxy.ts
+├── src/                   # React renderer
+│   ├── App.tsx            # Root shell
+│   ├── index.css          # Design system (1392 lines)
+│   ├── components/        # 20 TSX components
+│   ├── store/             # Zustand state
+│   └── lib/               # Utilities, IPC clients, RAG wrapper
+├── python/                # FastAPI sidecar
+│   ├── server.py          # API endpoints
+│   ├── engines/           # PDF engine (PyMuPDF + ReportLab)
+│   ├── llm/               # LLM adapter + field extraction
+│   ├── sources/           # Folder source reader
+│   └── tests/             # pytest suite
+├── config/                # Runtime config (no secrets)
+└── public/                # Static assets, logos
+```
+
 ## How to Contribute
 
 ### Reporting Issues
@@ -59,9 +88,14 @@ All contributors are expected to conduct themselves professionally. Be respectfu
    git checkout -b feature/your-feature-name
    ```
 
-2. Make your changes following the project conventions (see below).
+2. Make your changes following the conventions below.
 
-3. Test your changes locally by running the full application.
+3. Run the test suites:
+   ```bash
+   npm test              # Vitest unit tests
+   npm run test:e2e      # Playwright E2E tests
+   npm run test:py       # pytest for sidecar
+   ```
 
 4. Commit with clear, descriptive messages:
    ```bash
@@ -74,30 +108,31 @@ All contributors are expected to conduct themselves professionally. Be respectfu
 
 - Keep PRs focused on a single change or feature.
 - Provide a clear description of what the PR does and why.
-- Reference any related issues using `Fixes #123` or `Relates to #456`.
+- Reference related issues with `Fixes #123` or `Relates to #456`.
 - Ensure the application builds and runs without errors.
-- Include screenshots for any UI changes.
+- Include screenshots for UI changes.
 
-## Project Conventions
+## Conventions
 
 ### Frontend (React + TypeScript)
 
-- Components are `.tsx` files, one component per file, using named exports.
-- All styling uses CSS custom properties defined in `src/index.css`. Do not use inline styles except for dynamic CSS custom property values.
+- Components are `.tsx` files, one component per file, named exports.
 - Do not import React explicitly; the JSX transform handles it.
 - State management uses Zustand (`src/store/index.ts`).
+- No inline styles except for dynamic CSS custom property values (e.g., `style={{ '--pct': value }}`).
+
+### Styling (Papaya Design System)
+
+- All styles live in `src/index.css` using CSS custom properties.
+- Refer to `DESIGN.md` for the full token reference.
+- Use existing tokens. Do not introduce new color literals.
+- Follow established component patterns for cards, buttons, modals, and navigation.
 
 ### Backend (Python FastAPI)
 
-- Sidecar endpoints are defined in the `python/` directory.
-- Do not change existing API signatures without updating the corresponding TypeScript types in the frontend.
+- Sidecar endpoints are in the `python/` directory.
+- Do not change existing API signatures without updating TypeScript types in `src/lib/ipc/`.
 - All PDF processing uses PyMuPDF and ReportLab.
-
-### Styling
-
-- The design system uses a dark purple theme (Papaya). Refer to `DESIGN.md` for color tokens and component patterns.
-- Use the existing CSS custom properties. Do not introduce new color literals.
-- Follow the established component patterns for cards, buttons, modals, and navigation.
 
 ### Commit Messages
 
@@ -111,16 +146,23 @@ Follow conventional commit format:
 - `test:` — adding or updating tests
 - `chore:` — build, tooling, dependency updates
 
+### Branding
+
+- The app is called "Agent Kali" in all contexts.
+- Do not add third-party AI company branding or attribution in the UI, documentation, or code comments.
+
 ## Architecture Notes
 
 - The Electron main process spawns a Python FastAPI sidecar on a dynamic port. The React renderer communicates via IPC bridge to the main process, which proxies HTTP requests to the sidecar.
 - Participant data is sourced from the filesystem (`~/Desktop/Support-Coordination/`), not a database.
+- Provider data is read from markdown files in `~/Desktop/Jin-Obsidian/`.
 - RAG integration connects to a self-hosted LightRAG instance over Tailscale VPN.
+- The LLM adapter loads OAuth tokens from the macOS Keychain. Empty environment variables must be cleared before SDK initialization.
 
 ## Questions
 
-If you have questions about contributing, open a GitHub Discussion or reach out to the maintainers at JD Space Digital Systems.
+Open a GitHub Discussion or reach out to the maintainers at JD Space Digital Systems.
 
 ## License
 
-By contributing to Agent Kali, you agree that your contributions will be licensed under the same license as the project.
+By contributing to Agent Kali, you agree that your contributions will be licensed under the same license as the project (MIT).
