@@ -49,7 +49,7 @@ You are a Support Coordinator assistant helping to draft NDIS documentation.
 // Helpers
 // ---------------------------------------------------------------------------
 
-const DEFAULT_FOLDER = "~/Desktop/Jin-Obsidian/SupportCoordination/Prompt-Engineering-for-Support-Coordination/";
+const DEFAULT_FOLDER = "/Users/sharan/Desktop/Jin-Obsidian/SupportCoordination/Prompt-Engineering-for-Support-Coordination/";
 
 function formatDate(ms: number): string {
   const d = new Date(ms);
