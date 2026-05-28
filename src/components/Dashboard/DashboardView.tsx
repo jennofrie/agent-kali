@@ -137,8 +137,18 @@ export function RecentFormCard({ form, onOpen }: RecentFormCardProps) {
 // DashboardView
 // ---------------------------------------------------------------------------
 
+interface RecentFile {
+  name: string;
+  path: string;
+  modified: number;
+  participant: string;
+}
+
 export function DashboardView({ setActiveTab }: DashboardViewProps) {
-  const [participantCount, setParticipantCount] = useState<number | null>(null);
+  const [participantCount, setParticipantCount] = useState<number>(0);
+  const [totalFiles, setTotalFiles] = useState<number>(0);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+  const [pendingCount, setPendingCount] = useState<number>(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,11 +156,34 @@ export function DashboardView({ setActiveTab }: DashboardViewProps) {
       if (window.api?.scanParticipants) {
         try {
           const result = await window.api.scanParticipants();
-          if (!cancelled && result.participants) {
-            setParticipantCount(result.participants.length);
+          if (cancelled) return;
+          const pList = result.participants || [];
+          setParticipantCount(pList.length);
+
+          // Gather recent files across all participants
+          let allFiles: RecentFile[] = [];
+          let total = 0;
+          let pending = 0;
+          for (const p of pList) {
+            total += p.fileCount || 0;
+            if (!p.hasServiceAgreement) pending++;
+            // Get recent files from this participant
+            for (const rf of (p.recentFiles || [])) {
+              allFiles.push({
+                name: rf.name,
+                path: rf.path,
+                modified: rf.modified,
+                participant: p.name,
+              });
+            }
           }
+          // Sort by most recent, take top 6
+          allFiles.sort((a, b) => b.modified - a.modified);
+          setRecentFiles(allFiles.slice(0, 6));
+          setTotalFiles(total);
+          setPendingCount(pending);
         } catch {
-          // keep null, will show fallback "32"
+          // fallback
         }
       }
     }
@@ -158,30 +191,84 @@ export function DashboardView({ setActiveTab }: DashboardViewProps) {
     return () => { cancelled = true; };
   }, []);
 
-  const pCount = participantCount !== null ? String(participantCount) : "32";
-  const pMeta = participantCount !== null ? "Scanned from filesystem" : "+2 this fortnight";
+  const formatRelDate = (ms: number) => {
+    const diff = Date.now() - ms;
+    if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+    if (diff < 604800000) return `${Math.round(diff / 86400000)}d ago`;
+    return new Date(ms).toLocaleDateString("en-AU", { day: "2-digit", month: "short" });
+  };
+
+  // Determine form type from filename for thumbnail colors
+  const thumbType = (name: string): string => {
+    const n = name.toLowerCase();
+    if (n.includes("service") || n.includes("agreement") || n.includes("sa")) return "service";
+    if (n.includes("plan") || n.includes("review") || n.includes("reassess")) return "review";
+    if (n.includes("invoice") || n.includes("claim") || n.includes("travel")) return "claim";
+    if (n.includes("report") || n.includes("progress") || n.includes("implementation")) return "report";
+    if (n.includes("intake") || n.includes("referral") || n.includes("enquiry")) return "service";
+    return "report";
+  };
+
+  const hasMockFallback = participantCount === 0;
 
   return (
     <div>
       <div className="stat-grid">
-        <StatCard label="Total Participants" value={pCount} icon="users" meta={pMeta} metaIcon="trend-up" />
-        <StatCard label="Forms Filled \u00b7 May" value="47" icon="forms" meta="+18% vs April" metaIcon="trend-up" />
-        <StatCard label="Pending Actions" value="6" icon="clock" badge="3 OVERDUE" meta="Across 4 participants" />
-        <StatCard label="RAG Queries Today" value="124" icon="sparkles" meta="98% confidence avg" />
+        <StatCard
+          label="Total Participants"
+          value={hasMockFallback ? "22" : String(participantCount)}
+          icon="users"
+          meta={hasMockFallback ? "Loading..." : `${totalFiles} files across all folders`}
+          metaIcon="trend-up"
+        />
+        <StatCard
+          label="Forms & Documents"
+          value={hasMockFallback ? "\u2014" : String(totalFiles)}
+          icon="forms"
+          meta="Across all participant folders"
+        />
+        <StatCard
+          label="Pending Actions"
+          value={hasMockFallback ? "\u2014" : String(pendingCount)}
+          icon="clock"
+          badge={pendingCount > 0 ? `${pendingCount} NEED SA` : undefined}
+          meta="Participants without service agreement"
+        />
+        <StatCard
+          label="RAG Connected"
+          value="2"
+          icon="sparkles"
+          meta="ndis + technical workspaces"
+        />
       </div>
 
       <div className="section-head">
         <div>
-          <div className="section-title">Recent forms</div>
-          <div className="section-sub">Last 7 days \u00b7 Across all participants</div>
+          <div className="section-title">Recent files</div>
+          <div className="section-sub">Most recently modified across all participants</div>
         </div>
-        <span className="see-all" onClick={() => setActiveTab("forms")}>View all forms \u2192</span>
+        <span className="see-all" onClick={() => setActiveTab("files")}>View all files \u2192</span>
       </div>
 
       <div className="form-grid">
-        {MOCK_FORMS.map((f: FormData) => (
-          <RecentFormCard key={f.id} form={f} onOpen={() => setActiveTab("forms")} />
-        ))}
+        {recentFiles.length > 0 ? recentFiles.map((rf, i) => {
+          const formData: FormData = {
+            id: `rf-${i}`,
+            title: rf.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "),
+            participant: rf.participant,
+            duration: "",
+            thumbType: thumbType(rf.name),
+            date: formatRelDate(rf.modified),
+            status: "done" as const,
+            pct: 100,
+          };
+          return <RecentFormCard key={i} form={formData} onOpen={() => setActiveTab("files")} />;
+        }) : (
+          MOCK_FORMS.map((f: FormData) => (
+            <RecentFormCard key={f.id} form={f} onOpen={() => setActiveTab("forms")} />
+          ))
+        )}
       </div>
 
       <div className="section-head" style={{ marginTop: 28 }}>
@@ -192,10 +279,10 @@ export function DashboardView({ setActiveTab }: DashboardViewProps) {
       </div>
       <div className="quick-row">
         <button className="btn primary" onClick={() => setActiveTab("forms")}><Icon name="upload" size={15} />Upload PDF</button>
-        <button className="btn" onClick={() => setActiveTab("rag")}><Icon name="sparkles" size={15} />Run RAG extraction</button>
-        <button className="btn" onClick={() => setActiveTab("participants")}><Icon name="users" size={15} />New participant intake</button>
-        <button className="btn" onClick={() => setActiveTab("templates")}><Icon name="template" size={15} />Browse templates</button>
-        <button className="btn" onClick={() => setActiveTab("reports")}><Icon name="report" size={15} />Build a report</button>
+        <button className="btn" onClick={() => setActiveTab("rag")}><Icon name="sparkles" size={15} />Research</button>
+        <button className="btn" onClick={() => setActiveTab("participants")}><Icon name="users" size={15} />Participants</button>
+        <button className="btn" onClick={() => setActiveTab("templates")}><Icon name="template" size={15} />Templates</button>
+        <button className="btn" onClick={() => setActiveTab("reports")}><Icon name="report" size={15} />Reports</button>
       </div>
     </div>
   );

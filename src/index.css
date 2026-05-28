@@ -312,6 +312,15 @@ body.hide-recents .recents-section + .nav-divider { display: none; }
   align-items: center;
   gap: 16px;
   padding: 16px 24px 0;
+  -webkit-app-region: drag; /* Make topbar a window drag handle */
+}
+.topbar button,
+.topbar input,
+.topbar select,
+.topbar .search-bar,
+.topbar .icon-btn,
+.topbar .avatar {
+  -webkit-app-region: no-drag; /* Interactive elements remain clickable */
 }
 .tab-title {
   font-size: 20px;
