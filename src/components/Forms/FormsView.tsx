@@ -100,19 +100,20 @@ async function runIngest(doc: OpenDoc): Promise<{ error?: string; editability?: 
   if (!doc.filePath) return { error: "No file path" };
   try {
     const res = await sidecar.post<any>("/ingest", { file_path: doc.filePath });
-    if (res.data?.error) return { error: res.data.error };
+    if (!res.ok || res.data?.error) return { error: res.data?.error || `Ingest failed: ${res.status}` };
     const store = useStore.getState();
-    if (res.data?.editability) {
-      store.setEditability(res.data.editability, res.data.path ?? null);
+    // The ingest response IS the form map: {source_path, editability, path, pages: [...]}
+    const data = res.data;
+    if (data?.editability) {
+      store.setEditability(data.editability, data.path ?? null);
     }
-    if (res.data?.form_map) {
-      store.setFormMap(res.data.form_map);
-    }
+    // Store the entire response as the form map (needed for replicate path)
+    store.setFormMap(data);
     store.setUploaded(doc.filePath);
     return {
-      editability: res.data?.editability,
-      path: res.data?.path,
-      formMap: res.data?.form_map,
+      editability: data?.editability,
+      path: data?.path,
+      formMap: data,
     };
   } catch (err) {
     return { error: String(err) };
@@ -123,12 +124,14 @@ async function runSchema(doc: OpenDoc): Promise<{ error?: string; fieldCount?: n
   if (!doc.filePath) return { error: "No file path" };
   try {
     const res = await sidecar.post<any>("/schema", { file_path: doc.filePath });
-    if (res.data?.error) return { error: res.data.error };
+    if (!res.ok || res.data?.error) return { error: res.data?.error || `Schema failed: ${res.status}` };
     const store = useStore.getState();
-    if (res.data?.fields) {
-      store.setFields(res.data.fields);
+    // Schema response: { fields: [...] }
+    const fields = res.data?.fields ?? [];
+    if (fields.length > 0) {
+      store.setFields(fields);
     }
-    return { fieldCount: res.data?.fields?.length ?? 0 };
+    return { fieldCount: fields.length };
   } catch (err) {
     return { error: String(err) };
   }
@@ -223,14 +226,17 @@ async function runExtract(
       schema: { fields },
       source_text: sourceText,
     });
-    if (res.data?.error) return { error: res.data.error };
+    if (!res.ok) return { error: res.data?.error || `Sidecar returned ${res.status}` };
 
+    // The sidecar returns the extraction result directly as res.data
+    // Format: { field_id: { value: ..., confidence: 0.0-1.0 }, ... }
     const store = useStore.getState();
     let filledCount = 0;
-    if (res.data?.values) {
-      const values = res.data.values as Record<string, { value: unknown; confidence: number } | string | boolean>;
-      for (const [id, payload] of Object.entries(values)) {
-        if (payload && typeof payload === "object" && "value" in payload) {
+    const data = res.data as Record<string, unknown>;
+    if (data && typeof data === "object") {
+      for (const [id, payload] of Object.entries(data)) {
+        if (id === "error") continue; // skip error field if present
+        if (payload && typeof payload === "object" && "value" in (payload as Record<string, unknown>)) {
           const p = payload as { value: unknown; confidence: number };
           if (p.value !== null && p.value !== undefined && p.value !== "") {
             store.setFieldValue(id, p.value as string | boolean);
@@ -256,16 +262,32 @@ async function runFill(doc: OpenDoc): Promise<{ error?: string; filledPath?: str
     const store = useStore.getState();
     const fields = store.fields;
     const fieldValues = store.fieldValues;
+    const fillPath = store.path || "direct"; // Use the path from ingest (direct or replicate)
     const tmpOut = `/tmp/agent-kali-filled-${Date.now()}.pdf`;
+
+    // If path is "replicate", we need to create a replica first
+    let replicaPath = store.replicaPath;
+    if (fillPath === "replicate" && !replicaPath) {
+      const formMap = store.formMap;
+      if (!formMap) return { error: "No form map available for replication" };
+      const repRes = await sidecar.post<any>("/replicate", { form_map: formMap });
+      if (!repRes.ok || repRes.data?.error) {
+        return { error: repRes.data?.error || "Replication failed" };
+      }
+      replicaPath = repRes.data?.replica_path;
+      store.setReplicaPath(replicaPath ?? null);
+    }
+
     const res = await sidecar.post<any>("/fill", {
       source_path: doc.filePath,
       out_path: tmpOut,
-      path: "direct",
+      path: fillPath,
       schema: { fields },
       values: fieldValues,
+      replica_path: replicaPath,
     });
-    if (res.data?.error) return { error: res.data.error };
-    const filledPath = res.data?.out_path || tmpOut;
+    if (!res.ok || res.data?.error) return { error: res.data?.error || `Fill failed: ${res.status}` };
+    const filledPath = res.data?.filled_path || tmpOut;
     store.setFilled(filledPath);
     return { filledPath };
   } catch (err) {

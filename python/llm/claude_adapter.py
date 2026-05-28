@@ -44,6 +44,13 @@ def _read_oauth_token() -> str | None:
     return _read_keychain_token()
 
 def get_client() -> Anthropic:
+    # The Anthropic SDK treats empty-string env vars (ANTHROPIC_API_KEY="",
+    # ANTHROPIC_AUTH_TOKEN="") as "set but invalid" and raises TypeError.
+    # Clean them out so the SDK falls through to our explicit auth.
+    for env_key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        if env_key in os.environ and not os.environ[env_key].strip():
+            del os.environ[env_key]
+
     cfg = load_config()
     auth_mode = cfg.get("claude_runtime", {}).get("auth", "oauth")
     if auth_mode == "oauth":
@@ -51,12 +58,16 @@ def get_client() -> Anthropic:
         if token:
             return Anthropic(auth_token=token)
     key = os.environ.get(cfg["llm"]["adapters"]["claude"]["apiKeyEnv"])
-    if not key:
-        raise EnvironmentError(
-            "No Claude credentials: OAuth token unavailable and "
-            f"{cfg['llm']['adapters']['claude']['apiKeyEnv']} is not set."
-        )
-    return Anthropic(api_key=key)
+    if key and key.strip():
+        return Anthropic(api_key=key)
+    # Last resort: try OAuth even if config says otherwise
+    token = _read_oauth_token()
+    if token:
+        return Anthropic(auth_token=token)
+    raise EnvironmentError(
+        "No Claude credentials: OAuth token unavailable and "
+        f"{cfg['llm']['adapters']['claude']['apiKeyEnv']} is not set."
+    )
 
 def first_text(msg) -> str:
     """Return the text of the first text content block, robust to non-text blocks."""
