@@ -148,47 +148,66 @@ async function runExtract(
   try {
     const sections: string[] = [];
 
-    // 1. Query RAG for participant details (automatic if participant selected)
-    if (participantName && window.api?.ragQuery) {
+    // PRIMARY SOURCE: Read profile.md from participant's agent-kali folder
+    // This is the single source of truth — pre-compiled from RAG + folder + email
+    let profileLoaded = false;
+    if (sourceFolder && window.api?.readFile) {
+      const profilePath = sourceFolder + "/agent-kali/profile.md";
       try {
-        const ragResult = await window.api.ragQuery(
-          `${participantName} date of birth address phone email NDIS number diagnosis plan details personal information`
-        );
-        if (ragResult && ragResult.length > 10) {
-          sections.push(`=== PARTICIPANT DATA (from RAG) ===\n${ragResult}`);
+        const bytes = await window.api.readFile(profilePath);
+        const profileText = new TextDecoder().decode(new Uint8Array(bytes));
+        if (profileText && profileText.length > 50) {
+          sections.push(`=== PARTICIPANT PROFILE (from agent-kali/profile.md) ===\n${profileText}`);
+          profileLoaded = true;
         }
       } catch {
-        // RAG unavailable, continue
+        // profile.md doesn't exist yet — fall back to RAG + folder
       }
     }
 
-    // 2. Read files from participant's SC folder via sidecar
-    if (sourceFolder) {
-      try {
-        const folderRes = await sidecar.post<any>("/extract-from-folder", {
-          folder_path: sourceFolder,
-          schema: { fields: useStore.getState().fields },
-        });
-        if (folderRes.ok && folderRes.data?.values) {
-          // Apply folder-extracted values directly
-          const store = useStore.getState();
-          const values = folderRes.data.values as Record<string, { value: unknown; confidence: number }>;
-          let folderFilled = 0;
-          for (const [id, payload] of Object.entries(values)) {
-            if (payload && payload.value !== null && payload.value !== undefined && payload.value !== "") {
-              store.setFieldValue(id, payload.value as string | boolean);
-              folderFilled++;
-            }
+    // FALLBACK: If no profile.md, query RAG and read folder directly
+    if (!profileLoaded) {
+      // Fallback 1: Query RAG
+      if (participantName && window.api?.ragQuery) {
+        try {
+          const ragResult = await window.api.ragQuery(
+            `${participantName} date of birth address phone email NDIS number diagnosis plan details personal information`
+          );
+          if (ragResult && ragResult.length > 10) {
+            sections.push(`=== PARTICIPANT DATA (from RAG — fallback) ===\n${ragResult}`);
           }
-          const filesRead = folderRes.data.files_read?.length ?? 0;
-          sections.push(`=== FOLDER DATA (${filesRead} files read, ${folderFilled} fields extracted) ===`);
+        } catch {
+          // RAG unavailable
         }
-      } catch {
-        // Folder extraction failed, continue with other sources
+      }
+
+      // Fallback 2: Read SC folder
+      if (sourceFolder) {
+        try {
+          const folderRes = await sidecar.post<any>("/extract-from-folder", {
+            folder_path: sourceFolder,
+            schema: { fields: useStore.getState().fields },
+          });
+          if (folderRes.ok && folderRes.data?.values) {
+            const store = useStore.getState();
+            const values = folderRes.data.values as Record<string, { value: unknown; confidence: number }>;
+            let folderFilled = 0;
+            for (const [id, payload] of Object.entries(values)) {
+              if (payload && payload.value !== null && payload.value !== undefined && payload.value !== "") {
+                store.setFieldValue(id, payload.value as string | boolean);
+                folderFilled++;
+              }
+            }
+            const filesRead = folderRes.data.files_read?.length ?? 0;
+            sections.push(`=== FOLDER DATA (fallback — ${filesRead} files, ${folderFilled} fields) ===`);
+          }
+        } catch {
+          // Folder extraction failed
+        }
       }
     }
 
-    // 3. Query additional RAG workspace if specified
+    // SUPPLEMENTARY: Additional RAG workspace query (always runs if specified)
     if (ragQuery && ragQuery !== "" && window.api?.ragQuery) {
       try {
         const queryText = participantName
@@ -196,19 +215,19 @@ async function runExtract(
           : ragQuery;
         const ragResult = await window.api.ragQuery(queryText);
         if (ragResult && ragResult.length > 10) {
-          sections.push(`=== RAG WORKSPACE DATA ===\n${ragResult}`);
+          sections.push(`=== SUPPLEMENTARY RAG DATA ===\n${ragResult}`);
         }
       } catch {
         // RAG query failed
       }
     }
 
-    // 4. Add free-form context
+    // SUPPLEMENTARY: Free-form context
     if (freeFormContext && freeFormContext.trim()) {
       sections.push(`=== ADDITIONAL CONTEXT ===\n${freeFormContext.trim()}`);
     }
 
-    // 5. Add user instructions (HIGHEST PRIORITY — overrides everything)
+    // HIGHEST PRIORITY: User instructions (overrides everything)
     if (instructions && instructions.trim()) {
       sections.push(`=== USER INSTRUCTIONS (HIGHEST PRIORITY — OVERRIDE ALL OTHER DATA) ===\n${instructions.trim()}\n\nThese instructions MUST be followed exactly. They override any auto-extracted values. If an instruction says to skip a field, leave it blank. If it says to tick a checkbox, tick it. If it says do not fill a page or section, leave all fields in that area empty.`);
     }
