@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Icon } from "../Shared/Icon";
+import { PdfPreview } from "../Shared/PdfPreview";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +62,7 @@ export function ReportsView() {
   const [filter, setFilter] = useState<string>("all");
   const [rootPath, setRootPath] = useState(DEFAULT_ROOT);
   const [showConfig, setShowConfig] = useState(false);
+  const [viewingReport, setViewingReport] = useState<ScannedReport | null>(null);
 
   useEffect(() => {
     scanReports();
@@ -132,6 +134,18 @@ export function ReportsView() {
     return d.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
   };
 
+  // Maximized PDF view
+  if (viewingReport) {
+    return (
+      <PdfPreview
+        filePath={viewingReport.path}
+        fileName={viewingReport.name}
+        subtitle={`${viewingReport.participant} · ${typeLabel(viewingReport.type)}`}
+        onMinimize={() => setViewingReport(null)}
+      />
+    );
+  }
+
   return (
     <div>
       <div className="section-head" style={{ marginTop: 0 }}>
@@ -190,9 +204,9 @@ export function ReportsView() {
         </div>
 
         {filtered.slice(0, 20).map((r, i) => (
-          <div key={i} className="form-card" onClick={() => {
-            if (r.path !== "/mock" && typeof window.api?.openFile === "function") {
-              // Could open in Forms view
+          <div key={i} className="form-card" style={{ cursor: "pointer" }} onClick={() => {
+            if (r.path !== "/mock") {
+              setViewingReport(r);
             }
           }}>
             <div className="form-thumb">
