@@ -1,8 +1,9 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, screen } from 'electron'
 import { startSidecar, stopSidecar } from './sidecar'
 import { registerSidecarIPC } from './ipc/sidecarProxy'
 import { registerRagIPC } from './ipc/ragHandlers'
 import { registerFileIPC } from './ipc/fileHandlers'
+import { registerParticipantIPC } from './ipc/participantHandlers'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -29,13 +30,25 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 
 function createWindow() {
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize
+
   win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    width: Math.min(1440, width),
+    height: Math.min(900, height),
+    minWidth: 980,
+    minHeight: 720,
+    show: false,
+    titleBarStyle: 'hiddenInset',
+    title: 'Agent Kali',
+    icon: path.join(process.env.VITE_PUBLIC, 'logo-128.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
-      // webSecurity disabled to allow file:// PDF loading in the renderer (MVP; revisit before distribution)
       webSecurity: false,
     },
+  })
+
+  win.once('ready-to-show', () => {
+    win?.show()
   })
 
   // Test active push message to Renderer-process.
@@ -82,5 +95,6 @@ app.whenReady().then(async () => {
   registerSidecarIPC()
   registerRagIPC()
   registerFileIPC()
+  registerParticipantIPC()
   createWindow()
 })

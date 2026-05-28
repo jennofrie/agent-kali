@@ -10,4 +10,9 @@ contextBridge.exposeInMainWorld("api", {
   saveFile: (defaultName: string) => ipcRenderer.invoke("file:save", defaultName),
   readFile: (filePath: string): Promise<number[]> =>
     ipcRenderer.invoke("file:read", filePath),
+  scanParticipants: () => ipcRenderer.invoke("participants:scan"),
+  listParticipantFiles: (folderPath: string, subfolder?: string) =>
+    ipcRenderer.invoke("participants:listFiles", folderPath, subfolder),
+  importFileToParticipant: (sourcePath: string, participantFolder: string, subfolder: string) =>
+    ipcRenderer.invoke("participants:importFile", sourcePath, participantFolder, subfolder),
 });

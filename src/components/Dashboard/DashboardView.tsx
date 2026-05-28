@@ -1,0 +1,202 @@
+import React, { useState, useEffect } from "react";
+import { Icon } from "../Shared/Icon";
+import { MOCK_FORMS } from "../../lib/mockData";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface StatCardProps {
+  label: string;
+  value: string;
+  icon: string;
+  meta?: string;
+  metaIcon?: string;
+  badge?: string;
+}
+
+interface FormData {
+  id: string | number;
+  title: string;
+  participant: string;
+  date: string;
+  status: "done" | "progress" | "pending" | "review";
+  thumbType: string;
+  duration: string;
+  pct: number;
+}
+
+interface RecentFormCardProps {
+  form: FormData;
+  onOpen: () => void;
+}
+
+interface FormThumbProps {
+  type: string;
+  duration: string;
+  pct: number;
+}
+
+interface DashboardViewProps {
+  setActiveTab: (tab: string) => void;
+}
+
+// ---------------------------------------------------------------------------
+// StatCard
+// ---------------------------------------------------------------------------
+
+export function StatCard({ label, value, icon, meta, metaIcon, badge }: StatCardProps) {
+  return (
+    <div className="stat-card">
+      {badge ? <span className="stat-badge stat-badge-corner">{badge}</span> : null}
+      <div className="stat-head">
+        <div className="stat-icon"><Icon name={icon} size={16} /></div>
+        <span>{label}</span>
+      </div>
+      <div className="stat-value">{value}</div>
+      {meta && (
+        <div className="stat-meta">
+          {metaIcon && <Icon name={metaIcon} size={13} className={meta.includes("\u2191") || metaIcon === "trend-up" ? "up" : metaIcon === "trend-down" ? "down" : ""} />}
+          <span>{meta}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FormThumb — decorative thumbnail with striped backgrounds & type-based colors
+// ---------------------------------------------------------------------------
+
+export function FormThumb({ type, duration, pct }: FormThumbProps) {
+  const tints: Record<string, { a: string; b: string }> = {
+    service: { a: "rgba(138,100,255,0.22)", b: "rgba(96,165,250,0.18)" },
+    review:  { a: "rgba(231,76,138,0.22)", b: "rgba(138,100,255,0.18)" },
+    claim:   { a: "rgba(52,211,153,0.22)", b: "rgba(138,100,255,0.18)" },
+    risk:    { a: "rgba(247,183,60,0.22)", b: "rgba(231,76,138,0.18)" },
+    sil:     { a: "rgba(96,165,250,0.22)", b: "rgba(138,100,255,0.18)" },
+    bsp:     { a: "rgba(196,181,255,0.25)", b: "rgba(231,76,138,0.18)" },
+  };
+  const tint = tints[type] || tints.service;
+
+  return (
+    <div className="form-thumb">
+      <div className="form-thumb-stripes" style={{
+        background: `repeating-linear-gradient(135deg, ${tint.a} 0 12px, rgba(138,100,255,0.04) 12px 24px), linear-gradient(180deg, ${tint.a}, ${tint.b})`
+      }}></div>
+      <div className="form-thumb-pdf">
+        <div className="row head"></div>
+        <div className="row med"></div>
+        <div className="row"></div>
+        <div className="row short"></div>
+        <div className="row med"></div>
+        <div className="row"></div>
+        <div className="row short"></div>
+      </div>
+      <div className="form-duration">{duration}</div>
+      {pct < 100 && (
+        <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+          <div className="gauge" style={{ width: 56, background: "rgba(0,0,0,0.55)" }}>
+            <div className="fill" style={{ "--pct": pct + "%" } as React.CSSProperties}></div>
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "white", background: "rgba(0,0,0,0.65)", padding: "2px 6px", borderRadius: 4, backdropFilter: "blur(6px)" }}>{pct}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RecentFormCard
+// ---------------------------------------------------------------------------
+
+export function RecentFormCard({ form, onOpen }: RecentFormCardProps) {
+  const initials = form.participant.split(" ").map((s) => s[0]).join("").slice(0, 2);
+  const statusLabel: Record<string, string> = { done: "Exported", progress: "In progress", pending: "Pending", review: "Review" };
+
+  return (
+    <div className="form-card" onClick={onOpen}>
+      <FormThumb type={form.thumbType} duration={form.duration} pct={form.pct} />
+      <div className="form-body">
+        <div className="form-icon">{initials}</div>
+        <div className="form-meta">
+          <div className="form-title">{form.title}</div>
+          <div className="form-sub">{form.participant}</div>
+          <div className="form-stats">
+            <span>{form.date}</span>
+            <span className="dot"></span>
+            <span className={"status-chip " + form.status}>{statusLabel[form.status]}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DashboardView
+// ---------------------------------------------------------------------------
+
+export function DashboardView({ setActiveTab }: DashboardViewProps) {
+  const [participantCount, setParticipantCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (window.api?.scanParticipants) {
+        try {
+          const result = await window.api.scanParticipants();
+          if (!cancelled && result.participants) {
+            setParticipantCount(result.participants.length);
+          }
+        } catch {
+          // keep null, will show fallback "32"
+        }
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  const pCount = participantCount !== null ? String(participantCount) : "32";
+  const pMeta = participantCount !== null ? "Scanned from filesystem" : "+2 this fortnight";
+
+  return (
+    <div>
+      <div className="stat-grid">
+        <StatCard label="Total Participants" value={pCount} icon="users" meta={pMeta} metaIcon="trend-up" />
+        <StatCard label="Forms Filled \u00b7 May" value="47" icon="forms" meta="+18% vs April" metaIcon="trend-up" />
+        <StatCard label="Pending Actions" value="6" icon="clock" badge="3 OVERDUE" meta="Across 4 participants" />
+        <StatCard label="RAG Queries Today" value="124" icon="sparkles" meta="98% confidence avg" />
+      </div>
+
+      <div className="section-head">
+        <div>
+          <div className="section-title">Recent forms</div>
+          <div className="section-sub">Last 7 days \u00b7 Across all participants</div>
+        </div>
+        <span className="see-all" onClick={() => setActiveTab("forms")}>View all forms \u2192</span>
+      </div>
+
+      <div className="form-grid">
+        {MOCK_FORMS.map((f: FormData) => (
+          <RecentFormCard key={f.id} form={f} onOpen={() => setActiveTab("forms")} />
+        ))}
+      </div>
+
+      <div className="section-head" style={{ marginTop: 28 }}>
+        <div>
+          <div className="section-title">Quick actions</div>
+          <div className="section-sub">Jump back into common workflows</div>
+        </div>
+      </div>
+      <div className="quick-row">
+        <button className="btn primary" onClick={() => setActiveTab("forms")}><Icon name="upload" size={15} />Upload PDF</button>
+        <button className="btn" onClick={() => setActiveTab("rag")}><Icon name="sparkles" size={15} />Run RAG extraction</button>
+        <button className="btn" onClick={() => setActiveTab("participants")}><Icon name="users" size={15} />New participant intake</button>
+        <button className="btn" onClick={() => setActiveTab("templates")}><Icon name="template" size={15} />Browse templates</button>
+        <button className="btn" onClick={() => setActiveTab("reports")}><Icon name="report" size={15} />Build a report</button>
+      </div>
+    </div>
+  );
+}
