@@ -1144,7 +1144,7 @@ export function InfoPanel({ doc }: InfoPanelProps) {
 // ReplaceAndSave — replaces original empty form with the filled version
 // ---------------------------------------------------------------------------
 
-function ReplaceAndSave({ doc }: { doc: OpenDoc }) {
+export function _ReplaceAndSave({ doc }: { doc: OpenDoc }) {
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [statusMsg, setStatusMsg] = useState("");
 
@@ -1561,6 +1561,320 @@ function ImportToParticipant({ doc, onMoved }: { doc: OpenDoc; onMoved?: (newPat
 }
 
 // ---------------------------------------------------------------------------
+// AutoFillPanel — single automated workflow, no manual tabs
+// ---------------------------------------------------------------------------
+
+type AutoFillStep = "idle" | "selecting" | "running" | "done" | "error";
+
+function AutoFillPanel({
+  doc,
+  onUpdateDoc,
+  onResolveAmbiguity: _onResolveAmbiguity,
+}: {
+  doc: OpenDoc;
+  onUpdateDoc?: (id: string, updates: Partial<OpenDoc>) => void;
+  onResolveAmbiguity?: () => void;
+}) {
+  const [participants, setParticipants] = useState<RealParticipant[]>([]);
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [instructions, setInstructions] = useState<string>("");
+  const [step, setStep] = useState<AutoFillStep>("idle");
+  const [progress, setProgress] = useState<string>("");
+  const [stepNum, setStepNum] = useState<number>(0);
+  const [totalSteps] = useState<number>(5);
+  const [fieldCount, setFieldCount] = useState<number>(0);
+  const [filledCount, setFilledCount] = useState<number>(0);
+  const [showFields, setShowFields] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string>("");
+
+  const { fields, fieldValues } = useStore();
+
+  // Load real participants on mount
+  useEffect(() => {
+    if (window.api?.scanParticipants) {
+      window.api.scanParticipants().then((r) => {
+        const pList = (r.participants || []).map((p: RealParticipant, i: number) => ({
+          ...p,
+          color: p.color || PARTICIPANT_COLORS[i % PARTICIPANT_COLORS.length],
+        }));
+        setParticipants(pList);
+        // Auto-detect participant from filename
+        if (doc.fileName && pList.length > 0) {
+          const fname = doc.fileName.toLowerCase().replace(/[-_]/g, " ");
+          const match = pList.find((p: RealParticipant) =>
+            fname.includes(p.name.toLowerCase().replace(/[-_]/g, " ")) ||
+            fname.includes(p.name.toLowerCase().split(" ").join(""))
+          );
+          if (match) setSelectedId(match.id);
+        }
+      }).catch(() => setParticipants([]));
+    } else {
+      // Browser fallback
+      setParticipants(MOCK_PARTICIPANTS.map((p, i) => ({
+        id: p.id, name: p.name, initials: p.initials,
+        folderPath: "", folderName: "", subfolders: [],
+        fileCount: 0, hasIntakeForm: false, hasServiceAgreement: false, hasCaseNotes: false,
+        recentFiles: [],
+        color: PARTICIPANT_COLORS[i % PARTICIPANT_COLORS.length],
+      })));
+    }
+  }, [doc.fileName]);
+
+  const selectedParticipant = participants.find(p => p.id === selectedId);
+
+  // THE ONE BUTTON — runs entire pipeline automatically
+  const handleAutoFill = useCallback(async () => {
+    if (!doc.filePath) {
+      setErrorMsg("No file loaded. Upload a PDF first.");
+      setStep("error");
+      return;
+    }
+    if (!selectedParticipant) {
+      setErrorMsg("Select a participant first.");
+      setStep("error");
+      return;
+    }
+
+    setStep("running");
+    setErrorMsg("");
+
+    // STEP 1: Ingest
+    setStepNum(1);
+    setProgress("Analyzing PDF structure...");
+    const ingestResult = await runIngest(doc);
+    if (ingestResult.error) {
+      setErrorMsg(`Ingest failed: ${ingestResult.error}`);
+      setStep("error");
+      return;
+    }
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 10 });
+
+    // STEP 2: Schema
+    setStepNum(2);
+    setProgress(`PDF is ${ingestResult.editability}. Extracting form fields...`);
+    const schemaResult = await runSchema(doc);
+    if (schemaResult.error) {
+      setErrorMsg(`Schema extraction failed: ${schemaResult.error}`);
+      setStep("error");
+      return;
+    }
+    setFieldCount(schemaResult.fieldCount || 0);
+    setProgress(`Found ${schemaResult.fieldCount} fields. Gathering participant data...`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 25 });
+
+    // STEP 3: Extract values from all sources
+    setStepNum(3);
+    setProgress(`Querying RAG for ${selectedParticipant.name}... Reading SC folder...`);
+    const extractResult = await runExtract(
+      doc,
+      instructions,
+      "", // ragQuery — the participant name query is built inside runExtract
+      selectedParticipant.name,
+      selectedParticipant.folderPath,
+      "", // freeFormContext
+    );
+    if (extractResult.error) {
+      setErrorMsg(`Extraction failed: ${extractResult.error}`);
+      setStep("error");
+      return;
+    }
+    setFilledCount(extractResult.filledCount || 0);
+    setProgress(`Extracted ${extractResult.filledCount} field values. Generating PDF...`);
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 60 });
+
+    // STEP 4: Fill PDF
+    setStepNum(4);
+    setProgress("Writing values to PDF...");
+    const fillResult = await runFill(doc);
+    if (fillResult.error) {
+      setErrorMsg(`Fill failed: ${fillResult.error}`);
+      setStep("error");
+      return;
+    }
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 90 });
+
+    // DONE
+    setStepNum(5);
+    setProgress(`Complete. ${extractResult.filledCount}/${schemaResult.fieldCount} fields filled.`);
+    setStep("done");
+    if (onUpdateDoc) onUpdateDoc(doc.id, { pct: 100, status: "done" });
+  }, [doc, selectedParticipant, instructions, onUpdateDoc]);
+
+  const handleExport = useCallback(async () => {
+    setProgress("Exporting...");
+    const result = await runExport(doc);
+    if (result.error) {
+      setProgress(`Export error: ${result.error}`);
+    } else {
+      setProgress(`Exported to ${result.destPath}`);
+    }
+  }, [doc]);
+
+  const pct = totalSteps > 0 ? Math.round((stepNum / totalSteps) * 100) : 0;
+
+  return (
+    <div className="controlpanel">
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14, height: "100%", overflow: "auto" }}>
+
+        {/* Header */}
+        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-faint)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          Auto-Fill
+        </div>
+
+        {/* Step 1: Select participant */}
+        <div className="field-card">
+          <div className="field-card-head">
+            <span className="field-card-label">Who is this form for?</span>
+          </div>
+          <select
+            className="field-input"
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+            disabled={step === "running"}
+          >
+            <option value="">-- Select participant --</option>
+            {participants.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          {selectedParticipant && (
+            <div className="field-source" style={{ marginTop: 6 }}>
+              {selectedParticipant.fileCount} files in SC folder
+              {selectedParticipant.folderPath ? ` \u00B7 ${selectedParticipant.folderPath.split("/").pop()}` : ""}
+            </div>
+          )}
+        </div>
+
+        {/* Optional: checkbox instructions */}
+        <div className="field-card">
+          <div className="field-card-head">
+            <span className="field-card-label">Checkbox instructions</span>
+            <span className="field-card-pill high" style={{ fontSize: 9 }}>optional</span>
+          </div>
+          <textarea
+            className="field-input"
+            rows={3}
+            placeholder={"Example:\n\u2022 Tick Yes for consent\n\u2022 Tick Plan managed\n\u2022 Check At Home for location"}
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            disabled={step === "running"}
+            style={{ resize: "vertical", fontSize: 12 }}
+          />
+        </div>
+
+        {/* THE BUTTON */}
+        {step !== "done" && (
+          <button
+            className="btn primary"
+            style={{ width: "100%", justifyContent: "center", minHeight: 48, fontSize: 15, fontWeight: 700 }}
+            onClick={handleAutoFill}
+            disabled={step === "running" || !selectedId}
+          >
+            {step === "running" ? (
+              <><Icon name="loader" size={16} /> Running...</>
+            ) : (
+              <><Icon name="zap" size={16} /> Auto-Fill Form</>
+            )}
+          </button>
+        )}
+
+        {/* Progress */}
+        {step === "running" && (
+          <div className="field-card" style={{ borderColor: "var(--border-strong)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-soft)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                Step {stepNum} of {totalSteps}
+              </div>
+              <div style={{ flex: 1, height: 4, borderRadius: 2, background: "rgba(138,100,255,0.15)" }}>
+                <div style={{ width: pct + "%", height: "100%", borderRadius: 2, background: "var(--primary)", transition: "width 300ms ease" }}></div>
+              </div>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>{pct}%</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--text)", lineHeight: 1.5 }}>{progress}</div>
+          </div>
+        )}
+
+        {/* Error */}
+        {step === "error" && (
+          <div className="field-card" style={{ borderColor: "var(--danger)" }}>
+            <div style={{ fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}>
+              <Icon name="warning" size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
+              {errorMsg}
+            </div>
+            <button className="btn small" style={{ marginTop: 8 }} onClick={() => { setStep("idle"); setErrorMsg(""); }}>
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Done */}
+        {step === "done" && (
+          <>
+            <div className="field-card" style={{ borderColor: "var(--success, #34d399)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <Icon name="check" size={16} style={{ color: "var(--success, #34d399)" }} />
+                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-hi)" }}>Form filled successfully</span>
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                {filledCount} of {fieldCount} fields populated from {selectedParticipant?.name || "participant"}'s data.
+              </div>
+            </div>
+
+            <button
+              className="btn primary"
+              style={{ width: "100%", justifyContent: "center", minHeight: 44 }}
+              onClick={handleExport}
+            >
+              <Icon name="download" size={15} /> Export Filled PDF
+            </button>
+
+            <button
+              className="btn"
+              style={{ width: "100%", justifyContent: "center" }}
+              onClick={() => { setStep("idle"); setStepNum(0); }}
+            >
+              <Icon name="sparkles" size={14} /> Re-run with different settings
+            </button>
+          </>
+        )}
+
+        {/* Info section — always visible at bottom */}
+        <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+          <div
+            style={{ fontSize: 11, fontWeight: 700, color: "var(--text-faint)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+            onClick={() => setShowFields(!showFields)}
+          >
+            <Icon name={showFields ? "chevron-down" : "chevron-right"} size={12} />
+            {fields.length > 0 ? `${fields.length} fields detected` : "Document info"}
+          </div>
+
+          {showFields && fields.length > 0 && (
+            <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 8 }}>
+              {fields.map(f => (
+                <div key={f.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 11.5, borderBottom: "1px solid var(--border)" }}>
+                  <span style={{ color: "var(--text-muted)" }}>{f.label}</span>
+                  <span style={{ color: fieldValues[f.id] ? "var(--success, #34d399)" : "var(--text-faint)", fontWeight: 600, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "right" }}>
+                    {fieldValues[f.id] !== undefined && fieldValues[f.id] !== ""
+                      ? (typeof fieldValues[f.id] === "boolean" ? (fieldValues[f.id] ? "\u2713" : "\u2717") : String(fieldValues[f.id]))
+                      : "\u2014"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ fontSize: 11, color: "var(--text-faint)", lineHeight: 1.6 }}>
+            <div>{doc.fileName}</div>
+            <div>{doc.pages} pages \u00B7 {doc.filePath ? "Real PDF" : "Demo"}</div>
+            {selectedParticipant && <div>Participant: {selectedParticipant.name}</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // MaximizedDoc
 // ---------------------------------------------------------------------------
 
@@ -1574,37 +1888,13 @@ export function MaximizedDoc({
   onUpdateDoc,
   onAddNew,
 }: MaximizedDocProps) {
-  const [subtab, setSubtab] = useState<string>("fields");
-  const [instructions, setInstructions] = useState<string>("");
-  const [ragQuery, setRagQuery] = useState<string>("");
-  const [participantName, setParticipantName] = useState<string>(doc.participant || "");
-  const [sourceFolder, setSourceFolder] = useState<string>("");
-  const [freeFormContext, setFreeFormContext] = useState<string>("");
-  const [extractStatus, setExtractStatus] = useState<string>("");
-
   // When switching to a doc with a filePath, set the store's uploadedPath
-  // so the real DocumentViewer loads the correct file
   const { setUploaded } = useStore();
   useEffect(() => {
     if (doc.filePath) {
       setUploaded(doc.filePath);
     }
   }, [doc.id, doc.filePath, setUploaded]);
-
-  const handleReExtract = useCallback(async () => {
-    setExtractStatus("Gathering data from all sources...");
-    const result = await runExtract(doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext);
-    if (result.error) {
-      setExtractStatus("Error: " + result.error);
-    } else {
-      setExtractStatus(`Filled ${result.filledCount} fields from: ${result.sourceSummary || "sources"}`);
-    }
-    setTimeout(() => setExtractStatus(""), 8000);
-  }, [doc, instructions, ragQuery, participantName, sourceFolder, freeFormContext]);
-
-  const handleExport = useCallback(async () => {
-    await runExport(doc);
-  }, [doc]);
 
   return (
     <div className="docworkspace">
@@ -1653,21 +1943,15 @@ export function MaximizedDoc({
             </button>
             <div className="spacer"></div>
             <span style={{ color: "var(--text-faint)" }}>Zoom 100%</span>
-            <ReplaceAndSave doc={doc} />
             <ImportToParticipant
               doc={doc}
               onMoved={(newPath) => {
                 if (onUpdateDoc) {
-                  // Extract just the filename from the new path
                   const newFileName = newPath.split("/").pop() || doc.fileName;
                   onUpdateDoc(doc.id, { fileName: newFileName, filePath: newPath });
                 }
               }}
             />
-            <button className="btn small ghost" onClick={handleExport}>
-              <Icon name="download" size={13} />
-              Export
-            </button>
           </div>
           <div className="pdf-canvas">
             {doc.filePath ? (
@@ -1678,55 +1962,11 @@ export function MaximizedDoc({
           </div>
         </div>
 
-        <div className="controlpanel">
-          <div className="controltabs">
-            {["fields", "sources", "pipeline", "info"].map((t) => (
-              <div
-                key={t}
-                className={
-                  "controltab " + (subtab === t ? "active" : "")
-                }
-                onClick={() => setSubtab(t)}
-              >
-                {t[0].toUpperCase() + t.slice(1)}
-              </div>
-            ))}
-          </div>
-          <div className="controlbody">
-            {subtab === "fields" && (
-              <FieldsPanel onResolveAmbiguity={onResolveAmbiguity} />
-            )}
-            {subtab === "sources" && (
-              <SourcesPanel
-                doc={doc}
-                instructions={instructions}
-                setInstructions={setInstructions}
-                ragQuery={ragQuery}
-                setRagQuery={setRagQuery}
-                freeFormContext={freeFormContext}
-                setFreeFormContext={setFreeFormContext}
-                onParticipantChange={(name, folder) => {
-                  setParticipantName(name);
-                  setSourceFolder(folder);
-                }}
-                extractStatus={extractStatus}
-                onReExtract={handleReExtract}
-              />
-            )}
-            {subtab === "pipeline" && (
-              <PipelinePanel
-                doc={doc}
-                onUpdateDoc={onUpdateDoc}
-                instructions={instructions}
-                ragQuery={ragQuery}
-                participantName={participantName}
-                sourceFolder={sourceFolder}
-                freeFormContext={freeFormContext}
-              />
-            )}
-            {subtab === "info" && <InfoPanel doc={doc} />}
-          </div>
-        </div>
+        <AutoFillPanel
+          doc={doc}
+          onUpdateDoc={onUpdateDoc}
+          onResolveAmbiguity={onResolveAmbiguity}
+        />
       </div>
     </div>
   );
