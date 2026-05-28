@@ -11,6 +11,10 @@ declare global {
       openFolder: () => Promise<string | null>;
       saveFile: (defaultName: string) => Promise<string | null>;
       readFile: (filePath: string) => Promise<number[]>;
+      scanProviders: () => Promise<{
+        files: Array<{ fileName: string; content: string }>;
+        dir: string;
+      }>;
       scanParticipants: () => Promise<{
         participants: RealParticipant[];
         root: string;

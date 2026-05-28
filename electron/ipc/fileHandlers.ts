@@ -66,6 +66,29 @@ export function registerFileIPC() {
     }
   });
 
+  ipcMain.handle('providers:scan', async () => {
+    const defaultDir = path.join(process.env.HOME || '', 'Desktop', 'Jin-Obsidian', 'CDSS-SSS-EMAIL');
+    const dirFiles = [
+      'ArtTherapy-Western-Melbourne-Directory.md',
+      'Dietitian-Western-Melbourne-Directory.md',
+      'EP-Western-Melbourne-Directory.md',
+      'OT-Western-Melbourne-Directory.md',
+      'Physio-Western-Melbourne-Directory.md',
+      'Psychologist-Western-Melbourne-Directory.md',
+    ];
+    const results: Array<{ fileName: string; content: string }> = [];
+    for (const fileName of dirFiles) {
+      const filePath = path.join(defaultDir, fileName);
+      try {
+        if (existsSync(filePath)) {
+          const content = readFileSync(filePath, 'utf-8');
+          results.push({ fileName, content });
+        }
+      } catch { /* skip unreadable files */ }
+    }
+    return { files: results, dir: defaultDir };
+  });
+
   ipcMain.handle('move-file', async (_event, sourcePath: string, destPath: string) => {
     try {
       const destDir = path.dirname(destPath);
